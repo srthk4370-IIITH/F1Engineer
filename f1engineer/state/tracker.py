@@ -40,6 +40,8 @@ class Lap:
             ch.setdefault(k, []).append(v)
 
     def n(self) -> int:
+        if self.arrays is not None:
+            return self._n
         return len(self.channels.get("t", ()))
 
     def truncate_after(self, t: float) -> None:
@@ -50,6 +52,9 @@ class Lap:
 
     def finalize(self) -> "Lap":
         self.arrays = {k: np.asarray(v, dtype=np.float32) for k, v in self.channels.items()}
+        n = self.n()
+        self.channels = {"t": [0.0] * 0}  # free the Python lists; arrays hold the data
+        self._n = n
         return self
 
 
@@ -332,7 +337,7 @@ class SessionTracker:
             self.trackmap = TrackMap.from_lap(lap.arrays, float(self.session.get("trackLength", 0)) or float(lap.arrays["dist"].max()))
             self.emit("trackmap", self.trackmap)
         c.completed.append(lap)
-        del c.completed[:-30]  # bounded memory; full history goes to storage
+        del c.completed[:-(10 if c.is_player else 2)]  # bounded memory; full history goes to storage
         self.emit("lap_complete", lap)
 
     def _abort(self, c: CarTracker, reason: str) -> None:

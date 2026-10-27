@@ -41,6 +41,12 @@ class TTS:
         from f1engineer.models import ensure_piper
         onnx, js = ensure_piper(cfg)
         self.voice = PiperVoice.load(str(onnx), config_path=str(js))
+        # ONNX Runtime's CPU arena grows with every new sentence length (+300 MB measured); without it RSS stays flat.
+        import onnxruntime as ort
+        so = ort.SessionOptions()
+        so.enable_cpu_mem_arena = False
+        so.intra_op_num_threads = 2
+        self.voice.session = ort.InferenceSession(str(onnx), sess_options=so, providers=["CPUExecutionProvider"])
         self.sr = self.voice.config.sample_rate
         self.fx = fx
 
