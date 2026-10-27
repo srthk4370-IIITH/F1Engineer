@@ -51,10 +51,9 @@ class Lap:
             del self.channels[k][keep:]
 
     def finalize(self) -> "Lap":
+        self._n = self.n()
         self.arrays = {k: np.asarray(v, dtype=np.float32) for k, v in self.channels.items()}
-        n = self.n()
-        self.channels = {"t": [0.0] * 0}  # free the Python lists; arrays hold the data
-        self._n = n
+        self.channels = {}  # free the Python lists; arrays hold the data
         return self
 
 
