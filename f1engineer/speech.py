@@ -50,11 +50,26 @@ class TTS:
         return radio_fx(x, self.sr) if self.fx else x.astype(np.float32) / 32768.0
 
 
+def _register_cuda_dlls() -> None:
+    """pip-installed CUDA libs (nvidia-cublas-cu12 / nvidia-cudnn-cu12) live in site-packages/nvidia/*/bin."""
+    import os
+    import site
+    for sp in site.getsitepackages():
+        root = os.path.join(sp, "nvidia")
+        if os.path.isdir(root):
+            for sub in os.listdir(root):
+                b = os.path.join(root, sub, "bin")
+                if os.path.isdir(b):
+                    os.add_dll_directory(b)
+                    os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
+
+
 def _gpu_ok(cfg) -> bool:
     """Use the GPU only if CUDA works and enough VRAM is free (another app may own the GPU)."""
     if cfg.gpu == "off":
         return False
     try:
+        _register_cuda_dlls()
         import ctranslate2
         if ctranslate2.get_cuda_device_count() < 1:
             return False
