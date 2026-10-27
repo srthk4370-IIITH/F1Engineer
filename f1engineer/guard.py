@@ -13,7 +13,6 @@ import os
 import sys
 import threading
 import time
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 import psutil
@@ -22,24 +21,37 @@ from f1engineer.storage import dir_size_gb, disk_free_gb
 
 
 class _Tee:
-    """Line-buffered stdout/stderr -> rotating log file (and the console when there is one)."""
+    """Line-buffered stdout/stderr -> size-rotated log file (and the console when there is one).
 
-    def __init__(self, handler: RotatingFileHandler, stream):
-        self.h, self.stream = handler, stream
+    Owns its file directly: a logging.Handler would be closed by uvicorn's logging.config.dictConfig().
+    """
+
+    MAX_BYTES, BACKUPS = 2_000_000, 3
+
+    def __init__(self, path: Path, stream, lock: threading.Lock):
+        self.path, self.stream, self.lock = path, stream, lock
         self.buf = ""
-        self.lock = threading.Lock()
+
+    def _rotate(self) -> None:
+        for i in range(self.BACKUPS - 1, 0, -1):
+            src = self.path.with_name(f"{self.path.name}.{i}")
+            if src.exists():
+                src.replace(self.path.with_name(f"{self.path.name}.{i + 1}"))
+        self.path.replace(self.path.with_name(f"{self.path.name}.1"))
 
     def write(self, s):
         with self.lock:
             self.buf += s
-            while "\n" in self.buf:
-                line, self.buf = self.buf.split("\n", 1)
-                if line.strip():
+            if "\n" in self.buf:
+                *lines, self.buf = self.buf.split("\n")
+                stamp = time.strftime("%H:%M:%S ")
+                text = "".join(stamp + ln.rstrip() + "\n" for ln in lines if ln.strip())
+                if text:
                     try:
-                        self.h.stream.write(time.strftime("%H:%M:%S ") + line.rstrip() + "\n")
-                        self.h.stream.flush()
-                        if self.h.shouldRollover(None):
-                            self.h.doRollover()
+                        with open(self.path, "a", encoding="utf-8") as f:
+                            f.write(text)
+                        if self.path.stat().st_size > self.MAX_BYTES:
+                            self._rotate()
                     except Exception:
                         pass
         if self.stream:
@@ -65,10 +77,9 @@ class _Tee:
 
 def setup_logging(logs_dir: Path, name: str) -> None:
     logs_dir.mkdir(parents=True, exist_ok=True)
-    h = RotatingFileHandler(logs_dir / f"{name}.log", maxBytes=2_000_000, backupCount=3, encoding="utf-8")
-    h.shouldRollover = lambda rec: h.stream.tell() > h.maxBytes  # type: ignore[assignment]
-    sys.stdout = _Tee(h, sys.stdout if sys.stdout and sys.stdout.isatty() else None)
-    sys.stderr = _Tee(h, sys.stderr if sys.stderr and sys.stderr.isatty() else None)
+    path, lock = logs_dir / f"{name}.log", threading.Lock()
+    sys.stdout = _Tee(path, sys.stdout if sys.stdout and sys.stdout.isatty() else None, lock)
+    sys.stderr = _Tee(path, sys.stderr if sys.stderr and sys.stderr.isatty() else None, lock)
 
 
 def lower_priority() -> None:
