@@ -171,7 +171,8 @@ class Engine:
         if lap.complete:
             if self.ref is None:
                 self._set_reference(lap.arrays, lap.lap_time, "your best lap")
-                self._say(f"Lap {radio.fmt_t(lap.lap_time)}. That's the banker, now we have a reference.", 3)
+                if not tr.is_race:
+                    self._say(f"Lap {radio.fmt_t(lap.lap_time)}. That's the banker, now we have a reference.", 3)
             else:
                 rs = LM.resample(lap.arrays, self.ref["track_length"])
                 if rs is not None:

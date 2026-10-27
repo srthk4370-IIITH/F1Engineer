@@ -91,7 +91,8 @@ class SessionTracker:
             try:
                 fn(*args)
             except Exception as e:  # a listener must never kill ingest
-                print(f"[tracker] listener {event} failed: {e!r}")
+                import traceback
+                print(f"[tracker] listener {event} failed: {e!r}\n{traceback.format_exc(limit=-3)}")
 
     # --- state -----------------------------------------------------------
     def reset(self, uid: int) -> None:
@@ -341,7 +342,8 @@ class SessionTracker:
 
 
 def _rec_to_dict(rec) -> dict:
-    return dict(zip(rec.dtype.names, rec.tolist()))
+    # void.tolist() leaves sub-array fields as ndarrays; make everything plain Python
+    return {k: (v.tolist() if isinstance(v, np.ndarray) else v) for k, v in zip(rec.dtype.names, rec.tolist())}
 
 
 class LazyRecords:
