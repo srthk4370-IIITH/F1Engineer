@@ -70,3 +70,12 @@ If context is lost, read this file first, then `PLAN.md`.
 - **02:45** Wrote `tools/record_udp.py`. Started recording on 127.0.0.1:20777 (background).
 - **02:46** User: OpenAI key tomorrow, so focus on the pipeline tonight with a mock LLM.
 - Wrote PLAN.md + HANDBOOK.md.
+- **02:49–02:57** Real capture recorded: `data/captures/real_f1_2020_session1.f1cap` (112 MB, 84,782 packets, format 2020, ~54 Hz per main type). Gaps (game paused/menus) ~02:51:30–02:52:30 and after 02:57:40. Game closed by 03:00; recorder stopped.
+- **User's notes on the capture (ground truth for tests):**
+  - Track: **Silverstone**, Time Trial.
+  - Laps 1–2 on **keyboard**. Lap 1: a few mistakes. Lap 2: an obvious mistake at **the Loop** (T3/Village–Loop complex).
+  - Then switched to **controller with different assists**. Went **off track, restarted the lap** (flashback/restart handling!).
+  - Next controller lap: lots of mistakes, **lock-ups** and **missed the line**.
+- **Personality update (user):** calm, concise pro **but a bit sassy**, with banter like "be a man", "my nan brakes later than that". Implement as a configurable `sass` level (0–3, default 2) in the prompts and template lines. Never sassy in safety-critical or strategy-critical calls.
+- **03:00** User left. Autonomous mode from here.
+- PTT default key: `T` (no answer from user, so I'm deciding). PB reference lap per track kept beyond the 2-session retention (my decision, tiny).
