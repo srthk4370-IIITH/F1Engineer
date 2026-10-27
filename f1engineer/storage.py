@@ -75,6 +75,10 @@ class Storage:
     def save_lap(self, uid: int, lap, car_name: str, report: dict | None, input_device: str) -> int | None:
         if not self.can_write():
             return None
+        with self.lock:  # same lap delivered twice (e.g. a replay of the same session): keep one
+            if self.db.execute("SELECT 1 FROM laps WHERE session_uid=? AND car_idx=? AND lap_num=? AND abs(lap_time-?)<0.0005",
+                               (str(uid), lap.car_idx, lap.lap_num, lap.lap_time)).fetchone():
+                return None
         d = self.root / "sessions" / str(uid)
         d.mkdir(parents=True, exist_ok=True)
         trace = d / f"car{lap.car_idx}_lap{lap.lap_num}_{int(time.time() * 1000) % 10**8}.npz"

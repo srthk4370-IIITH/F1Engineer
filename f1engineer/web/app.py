@@ -22,6 +22,13 @@ STATIC = Path(__file__).parent / "static"
 def create_app(engine) -> FastAPI:
     app = FastAPI(title="F1 Engineer", docs_url=None, redoc_url=None)
     app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+    @app.middleware("http")
+    async def no_cache(request, call_next):  # dashboard updates must show up without a hard refresh
+        resp = await call_next(request)
+        if request.url.path == "/" or request.url.path.startswith("/static/"):
+            resp.headers["Cache-Control"] = "no-cache"
+        return resp
     clients: set[WebSocket] = set()
     loop_holder: dict = {}
 

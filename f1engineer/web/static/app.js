@@ -103,14 +103,14 @@ function drawCompare() {
     const data = [x], series = [{}];
     keys.forEach(([k, label, col, src]) => { data.push(src === "B" ? bAt(k) : A.trace[k]); series.push({ label, stroke: col, width: 1.5 }); });
     const el = document.createElement("div"); $("charts").appendChild(el);
-    plots.push(new uPlot({ title, width: w, height: h, series, axes: [{ stroke: "#8b93a1", grid: { stroke: "#2a2f37" } }, { stroke: "#8b93a1", grid: { stroke: "#2a2f37" } }],
+    plots.push(new uPlot({ title, width: w, height: h, series, scales: { x: { time: false } }, axes: [{ stroke: "#8b93a1", grid: { stroke: "#2a2f37" } }, { stroke: "#8b93a1", grid: { stroke: "#2a2f37" } }],
       cursor: { sync: { key: "lap" } }, legend: { show: true } }, data.filter((d) => d), el));
   };
   const two = (k, la) => B ? [[k, "A " + la, "#4da3ff"], [k, "B " + la, "#ffc53d", "B"]] : [[k, la, "#4da3ff"]];
   if (B) {
     const delta = x.map((d, i) => interp(d, B.trace.dist, B.trace.t) - A.trace.t[i]);
     const el = document.createElement("div"); $("charts").appendChild(el);
-    plots.push(new uPlot({ title: "Delta B − A (s, + = B slower)", width: w, height: 140, series: [{}, { label: "delta", stroke: "#b37bff", width: 2 }],
+    plots.push(new uPlot({ title: "Delta B − A (s, + = B slower) by lap distance (m)", width: w, height: 140, scales: { x: { time: false } }, series: [{}, { label: "delta", stroke: "#b37bff", width: 2 }],
       axes: [{ stroke: "#8b93a1", grid: { stroke: "#2a2f37" } }, { stroke: "#8b93a1", grid: { stroke: "#2a2f37" } }], cursor: { sync: { key: "lap" } } }, [x, delta], el));
   }
   mk("Speed (km/h)", two("speed", "speed"), 200);
@@ -124,7 +124,7 @@ function drawMap() {
   const c = $("map"), g = c.getContext("2d"); g.clearRect(0, 0, c.width, c.height);
   const t = A.trace; if (!t.x) return;
   const xs = t.x, zs = t.z, minx = Math.min(...xs), maxx = Math.max(...xs), minz = Math.min(...zs), maxz = Math.max(...zs);
-  const s = 380 / Math.max(maxx - minx, maxz - minz), px = (i) => 20 + (xs[i] - minx) * s, pz = (i) => 20 + (zs[i] - minz) * s;
+  const s = 380 / Math.max(maxx - minx, maxz - minz), px = (i) => 20 + (xs[i] - minx) * s, pz = (i) => 20 + (maxz - zs[i]) * s;
   let loss = null;
   if (B) { const d = t.dist.map((dd, i) => interp(dd, B.trace.dist, B.trace.t) - t.t[i]); loss = d.map((v, i) => i ? v - d[i - 1] : 0); }
   for (let i = 1; i < xs.length; i++) {
@@ -135,3 +135,15 @@ function drawMap() {
   g.fillStyle = "#8b93a1"; g.font = "12px sans-serif"; g.fillText(B ? "red = B losing to A, green = B gaining" : "lap A line", 20, 410);
 }
 window.addEventListener("resize", () => { if (A) drawCompare(); });
+
+// deep links: /#laps?a=12&b=15 opens the lap comparison directly
+(async () => {
+  const h = location.hash;
+  if (!h.startsWith("#laps")) return;
+  document.querySelector('nav button[data-tab="laps"]').click();
+  const q = new URLSearchParams(h.split("?")[1] || "");
+  const get = async (id) => { const l = await (await fetch("/api/lap/" + id)).json(); l.id = +id; return l; };
+  if (q.get("a")) A = await get(q.get("a"));
+  if (q.get("b")) B = await get(q.get("b"));
+  if (A) { loadLaps(); drawCompare(); }
+})();
