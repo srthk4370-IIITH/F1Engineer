@@ -1,0 +1,287 @@
+"""Speech worker (separate process so ML never stalls telemetry ingest).
+
+Core -> worker:  ("say", text, priority) | ("ptt", bool) | ("quit",)
+Worker -> core:  ("transcript", text, stt_ms) | ("log", text)
+
+Push-to-talk sources (OR-ed): keyboard hotkey (pynput), XInput controller button (ctypes, no deps),
+and the game's own UDP button state forwarded by the core.
+"""
+from __future__ import annotations
+
+import ctypes
+import multiprocessing as mp
+import queue
+import threading
+import time
+
+import numpy as np
+
+STT_PROMPT = ("F1 race engineer radio. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
+              "Luffield, the Loop. Box box, undercut, overcut, DRS, ERS, softs, mediums, hards, inters, brake bias, "
+              "front wing, rear wing, differential, understeer, oversteer, lock-up, tyre wear, delta, sector, lap time.")
+
+
+def _bandpass(sr: int, lo: float = 300, hi: float = 3400, taps: int = 101) -> np.ndarray:
+    n = np.arange(taps) - (taps - 1) / 2
+    h = (2 * hi / sr) * np.sinc(2 * hi / sr * n) - (2 * lo / sr) * np.sinc(2 * lo / sr * n)
+    return (h * np.hamming(taps)).astype(np.float32)
+
+
+def radio_fx(x: np.ndarray, sr: int) -> np.ndarray:
+    """Cheap team-radio colour: band-limit ~300-3400 Hz, light saturation, squelch clicks."""
+    y = np.convolve(x.astype(np.float32) / 32768.0, _bandpass(sr), mode="same")
+    y = np.tanh(y * 2.5) * 0.8
+    click = (np.random.rand(int(sr * 0.03)).astype(np.float32) - 0.5) * 0.25
+    return np.concatenate([click, y, click * 0.6])
+
+
+class TTS:
+    def __init__(self, cfg, fx: bool = True):
+        from piper import PiperVoice
+        from f1engineer.models import ensure_piper
+        onnx, js = ensure_piper(cfg)
+        self.voice = PiperVoice.load(str(onnx), config_path=str(js))
+        self.sr = self.voice.config.sample_rate
+        self.fx = fx
+
+    def synth(self, text: str) -> np.ndarray:
+        pcm = b"".join(ch.audio_int16_bytes for ch in self.voice.synthesize(text))
+        x = np.frombuffer(pcm, dtype=np.int16)
+        return radio_fx(x, self.sr) if self.fx else x.astype(np.float32) / 32768.0
+
+
+def _gpu_ok(cfg) -> bool:
+    """Use the GPU only if CUDA works and enough VRAM is free (another app may own the GPU)."""
+    if cfg.gpu == "off":
+        return False
+    try:
+        import ctranslate2
+        if ctranslate2.get_cuda_device_count() < 1:
+            return False
+        import pynvml
+        pynvml.nvmlInit()
+        free = pynvml.nvmlDeviceGetMemoryInfo(pynvml.nvmlDeviceGetHandleByIndex(0)).free / 1e9
+        return free > 1.5
+    except Exception:
+        return False
+
+
+class STT:
+    def __init__(self, cfg):
+        from faster_whisper import WhisperModel
+        from f1engineer.models import ensure_whisper
+        path = ensure_whisper(cfg)
+        self.device = "cpu"
+        if _gpu_ok(cfg):
+            try:  # CUDA needs cuBLAS/cuDNN DLLs; the warm-up proves they load
+                self.model = WhisperModel(str(path), device="cuda", compute_type="float16")
+                self.transcribe(np.zeros(16000, np.float32))
+                self.device = "cuda"
+            except Exception:
+                self.model = None
+        if self.device == "cpu":
+            self.model = WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=4)
+            self.transcribe(np.zeros(16000, np.float32))  # warm-up
+
+    def transcribe(self, audio16k: np.ndarray) -> str:
+        segs, _ = self.model.transcribe(audio16k, language="en", beam_size=1, initial_prompt=STT_PROMPT,
+                                        vad_filter=False, condition_on_previous_text=False, without_timestamps=True)
+        return " ".join(s.text.strip() for s in segs).strip()
+
+
+class XInput:
+    """Minimal XInput poller (Windows). Returns pressed button bitmask, 0 if no pad."""
+
+    class _State(ctypes.Structure):
+        _fields_ = [("dwPacketNumber", ctypes.c_uint), ("wButtons", ctypes.c_ushort), ("bLeftTrigger", ctypes.c_ubyte),
+                    ("bRightTrigger", ctypes.c_ubyte), ("sThumbLX", ctypes.c_short), ("sThumbLY", ctypes.c_short),
+                    ("sThumbRX", ctypes.c_short), ("sThumbRY", ctypes.c_short)]
+
+    BUTTONS = {"DPAD_UP": 0x1, "DPAD_DOWN": 0x2, "DPAD_LEFT": 0x4, "DPAD_RIGHT": 0x8, "MENU": 0x10, "VIEW": 0x20,
+               "LS": 0x40, "RS": 0x80, "LB": 0x100, "RB": 0x200, "A": 0x1000, "B": 0x2000, "X": 0x4000, "Y": 0x8000}
+
+    def __init__(self):
+        self.dll = None
+        for name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
+            try:
+                self.dll = getattr(ctypes.windll, name)
+                break
+            except (OSError, AttributeError):
+                continue
+
+    def buttons(self) -> int:
+        if self.dll is None:
+            return 0
+        st = self._State()
+        if self.dll.XInputGetState(0, ctypes.byref(st)) != 0:
+            return 0
+        return st.wButtons
+
+    def connected(self) -> bool:
+        if self.dll is None:
+            return False
+        st = self._State()
+        return self.dll.XInputGetState(0, ctypes.byref(st)) == 0
+
+
+def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
+    import sounddevice as sd
+    try:
+        import psutil
+        psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+    except Exception:
+        pass
+    log = lambda s: outq.put(("log", s))  # noqa: E731
+    t = time.perf_counter()
+    tts = TTS(cfg)
+    log(f"TTS ready ({time.perf_counter() - t:.1f}s)")
+    t = time.perf_counter()
+    stt = STT(cfg)
+    log(f"STT ready on {stt.device} ({time.perf_counter() - t:.1f}s)")
+    outq.put(("ready", stt.device))
+
+    say_q: queue.PriorityQueue = queue.PriorityQueue()
+    seq = [0]
+    playing = threading.Event()
+    ptt_sources = {"key": False, "pad": False, "game": False}
+    rec = {"on": False, "chunks": []}
+    lock = threading.Lock()
+
+    def player():
+        while True:
+            prio, _, text = say_q.get()
+            if text is None:
+                return
+            if rec["on"]:
+                continue  # driver is talking: drop engineer chatter
+            audio = tts.synth(text)
+            playing.set()
+            sd.play(audio, tts.sr)
+            sd.wait()
+            playing.clear()
+
+    def set_ptt(src: str, down: bool):
+        with lock:
+            was = any(ptt_sources.values())
+            ptt_sources[src] = down
+            now = any(ptt_sources.values())
+        if now and not was:
+            if playing.is_set():
+                sd.stop()  # barge-in
+            while not say_q.empty():
+                try:
+                    say_q.get_nowait()
+                except queue.Empty:
+                    break
+            rec["chunks"] = []
+            rec["on"] = True
+        elif was and not now:
+            rec["on"] = False
+            threading.Thread(target=finish, daemon=True).start()
+
+    def finish():
+        time.sleep(0.15)  # tail of the last word
+        if not rec["chunks"]:
+            return
+        audio = np.concatenate(rec["chunks"])[:, 0]
+        if len(audio) < 16000 * 0.3:
+            return
+        t0 = time.perf_counter()
+        text = stt.transcribe(audio)
+        ms = (time.perf_counter() - t0) * 1000
+        if text:
+            outq.put(("transcript", text, round(ms)))
+
+    def mic_cb(indata, frames, t, status):
+        if rec["on"]:
+            rec["chunks"].append(indata.copy())
+
+    threading.Thread(target=player, daemon=True).start()
+    mic = None
+    try:
+        mic = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=mic_cb, blocksize=1600)
+        mic.start()
+    except Exception as e:
+        log(f"no microphone: {e!r}")
+
+    try:
+        from pynput import keyboard
+        key = cfg.ptt_key.lower()
+
+        def match(k):
+            return getattr(k, "char", None) and k.char.lower() == key or getattr(k, "name", None) == key
+
+        kl = keyboard.Listener(on_press=lambda k: match(k) and set_ptt("key", True),
+                               on_release=lambda k: match(k) and set_ptt("key", False))
+        kl.daemon = True
+        kl.start()
+    except Exception as e:
+        log(f"keyboard hotkey unavailable: {e!r}")
+
+    xi = XInput()
+    pad_mask = XInput.BUTTONS.get(cfg.ptt_game_button, 0)
+
+    def pad_poll():
+        last = False
+        while True:
+            down = bool(xi.buttons() & pad_mask) if pad_mask else False
+            if down != last:
+                set_ptt("pad", down)
+                last = down
+            time.sleep(0.02)
+
+    threading.Thread(target=pad_poll, daemon=True).start()
+
+    while True:
+        msg = inq.get()
+        if msg[0] == "say":
+            seq[0] += 1
+            say_q.put((msg[2], seq[0], msg[1]))
+        elif msg[0] == "ptt":
+            set_ptt("game", msg[1])
+        elif msg[0] == "quit":
+            say_q.put((-1, 0, None))
+            if mic:
+                mic.stop()
+            return
+
+
+class SpeechClient:
+    """Core-side handle to the speech process."""
+
+    def __init__(self, cfg, on_transcript):
+        ctx = mp.get_context("spawn")
+        self.inq, self.outq = ctx.Queue(), ctx.Queue()
+        self.proc = ctx.Process(target=worker, args=(cfg, self.inq, self.outq), name="f1e-speech", daemon=True)
+        self.proc.start()
+        self.on_transcript = on_transcript
+        self.device = None
+        threading.Thread(target=self._pump, daemon=True).start()
+
+    def _pump(self):
+        while True:
+            try:
+                m = self.outq.get()
+            except (EOFError, OSError):
+                return
+            if m[0] == "transcript":
+                print(f"[speech] heard ({m[2]} ms): {m[1]}")
+                threading.Thread(target=self.on_transcript, args=(m[1],), daemon=True).start()
+            elif m[0] == "ready":
+                self.device = m[1]
+            else:
+                print(f"[speech] {m[1]}")
+
+    def say(self, text: str, priority: int = 5) -> None:
+        self.inq.put(("say", text, priority))
+
+    def ptt(self, down: bool) -> None:
+        self.inq.put(("ptt", down))
+
+    def stop(self) -> None:
+        try:
+            self.inq.put(("quit",))
+            self.proc.join(3)
+        finally:
+            if self.proc.is_alive():
+                self.proc.terminate()

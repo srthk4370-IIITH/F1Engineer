@@ -171,7 +171,7 @@ class SessionTracker:
         elif pid == 0:
             self._on_motion(p)
         elif pid == 7:
-            self.status = [_rec_to_dict(s) for s in p["carStatusData"]]
+            self.status = LazyRecords(p["carStatusData"])
         elif pid == 5:
             self.setup = _rec_to_dict(p["carSetups"][self.player_idx])
         elif pid == 4:
@@ -341,8 +341,26 @@ class SessionTracker:
 
 
 def _rec_to_dict(rec) -> dict:
-    out = {}
-    for k in rec.dtype.names:
-        v = rec[k]
-        out[k] = v.tolist() if hasattr(v, "tolist") else v
-    return out
+    return dict(zip(rec.dtype.names, rec.tolist()))
+
+
+class LazyRecords:
+    """22-car record array that converts a car to a dict only when someone asks (hot path stays cheap)."""
+
+    __slots__ = ("_arr", "_cache")
+
+    def __init__(self, arr):
+        self._arr = arr
+        self._cache: dict[int, dict] = {}
+
+    def __getitem__(self, i: int) -> dict:
+        d = self._cache.get(i)
+        if d is None:
+            d = self._cache[i] = _rec_to_dict(self._arr[i])
+        return d
+
+    def __len__(self) -> int:
+        return len(self._arr)
+
+    def __bool__(self) -> bool:
+        return True
