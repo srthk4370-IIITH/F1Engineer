@@ -71,8 +71,14 @@ class OpenAIProvider:
         self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
     def stream(self, messages: list[dict], tools: list[dict]) -> Iterator[dict]:
-        resp = self.client.chat.completions.create(model=self.model, messages=messages, tools=tools,
-                                                   stream=True, temperature=0.6, max_tokens=350)
+        kw = {"temperature": 0.6, "max_completion_tokens": 350}
+        try:
+            resp = self.client.chat.completions.create(model=self.model, messages=messages, tools=tools, stream=True, **kw)
+        except Exception as e:  # some (reasoning) models only accept the default temperature
+            if "temperature" not in str(e):
+                raise
+            kw.pop("temperature")
+            resp = self.client.chat.completions.create(model=self.model, messages=messages, tools=tools, stream=True, **kw)
         calls: dict[int, dict] = {}
         for ev in resp:
             if not ev.choices:
