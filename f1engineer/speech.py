@@ -192,7 +192,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 return
             if rec["on"]:
                 continue  # driver is talking: drop engineer chatter
-            audio = tts.synth(text)
+            audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
             playing.set()
             sd.play(audio, tts.sr)
             sd.wait()
