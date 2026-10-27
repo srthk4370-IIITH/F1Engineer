@@ -46,7 +46,14 @@ def cmd_run(a) -> None:
             print(f"[run] speech disabled: {e!r}")
     eng = Engine(cfg, speech=speech, storage=store)
     eng_holder["e"] = eng
-    eng.start()
+    try:
+        eng.start()
+    except RuntimeError as e:
+        print(f"[run] {e}")
+        if speech:
+            speech.stop()
+        lock.release()
+        os._exit(2)
 
     stop = threading.Event()
 

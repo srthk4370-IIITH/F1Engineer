@@ -296,8 +296,19 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
 
     threading.Thread(target=gpu_watch, daemon=True).start()
 
+    import os
+    parent = os.getppid()
     while True:
-        msg = inq.get()
+        try:
+            msg = inq.get(timeout=2)
+        except queue.Empty:
+            try:
+                import psutil
+                if not psutil.pid_exists(parent):
+                    os._exit(0)  # engine died: never linger as an orphan
+            except ImportError:
+                pass
+            continue
         if msg[0] == "say":
             seq[0] += 1
             say_q.put((msg[2], seq[0], msg[1]))

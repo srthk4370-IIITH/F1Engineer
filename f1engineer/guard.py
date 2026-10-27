@@ -22,23 +22,32 @@ from f1engineer.storage import dir_size_gb, disk_free_gb
 
 
 class _Tee:
+    """Line-buffered stdout/stderr -> rotating log file (and the console when there is one)."""
+
     def __init__(self, handler: RotatingFileHandler, stream):
         self.h, self.stream = handler, stream
+        self.buf = ""
+        self.lock = threading.Lock()
 
     def write(self, s):
-        if s and s.strip():
-            try:
-                self.h.stream.write(time.strftime("%H:%M:%S ") + s.rstrip() + "\n")
-                self.h.stream.flush()
-                if self.h.shouldRollover(None):
-                    self.h.doRollover()
-            except Exception:
-                pass
+        with self.lock:
+            self.buf += s
+            while "\n" in self.buf:
+                line, self.buf = self.buf.split("\n", 1)
+                if line.strip():
+                    try:
+                        self.h.stream.write(time.strftime("%H:%M:%S ") + line.rstrip() + "\n")
+                        self.h.stream.flush()
+                        if self.h.shouldRollover(None):
+                            self.h.doRollover()
+                    except Exception:
+                        pass
         if self.stream:
             try:
                 self.stream.write(s)
             except Exception:
                 pass
+        return len(s)
 
     def isatty(self):
         return False

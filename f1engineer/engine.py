@@ -91,12 +91,23 @@ class Engine:
         except Exception:
             traceback.print_exc()
 
-    def run_udp(self) -> None:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
-        sock.bind((self.cfg.udp_host, self.cfg.udp_port))
-        sock.settimeout(0.5)
-        print(f"[engine] listening for F1 telemetry on {self.cfg.udp_host}:{self.cfg.udp_port}")
+    def bind_udp(self, retries: int = 10) -> socket.socket:
+        """Bind the telemetry port (retrying while a previous instance releases it). Raises if still busy."""
+        for i in range(retries):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4 * 1024 * 1024)
+            try:
+                sock.bind((self.cfg.udp_host, self.cfg.udp_port))
+                sock.settimeout(0.5)
+                print(f"[engine] listening for F1 telemetry on {self.cfg.udp_host}:{self.cfg.udp_port}")
+                return sock
+            except OSError:
+                sock.close()
+                if i == retries - 1:
+                    raise RuntimeError(f"UDP port {self.cfg.udp_port} is busy (another telemetry app running?)")
+                time.sleep(1)
+
+    def run_udp(self, sock: socket.socket) -> None:
         while not self._stop.is_set():
             try:
                 data = sock.recv(2048)
@@ -108,7 +119,8 @@ class Engine:
         sock.close()
 
     def start(self) -> None:
-        threading.Thread(target=self.run_udp, name="udp", daemon=True).start()
+        sock = self.bind_udp()
+        threading.Thread(target=self.run_udp, args=(sock,), name="udp", daemon=True).start()
         threading.Thread(target=self._bg_worker, name="bg", daemon=True).start()
         threading.Thread(target=self._tick_loop, name="tick", daemon=True).start()
 
