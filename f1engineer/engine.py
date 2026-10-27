@@ -195,6 +195,8 @@ class Engine:
                     is_best = lap.lap_time < self.ref["time"] and (not lap.invalid or "best" in self.ref["label"])
                     if tr.is_time_trial or not tr.is_race:
                         self.sched.push(radio.tt_lap_messages(rep, self.cfg.sass, is_best))
+                        self.sched.push([radio.Message(6, radio.CLOCK(), radio.lap_debrief_text(rep, self.advice),
+                                                       "garage", 900, "garage_debrief")])
             # new personal best (valid laps only, or any lap if we have nothing valid yet)
             best_stored = self.store.reference(tr.track)
             if not lap.invalid and (best_stored is None or lap.lap_time < best_stored[1]):
@@ -270,9 +272,13 @@ class Engine:
             time.sleep(0.1)
             n += 1
             try:
-                if time.time() - self.tr.last_packet_wall > 3:
-                    continue  # game not sending (menus/closed)
-                self.sched.tick(self.ctx())
+                if not self.tr.session:
+                    continue
+                # F1 2020 stops sending while paused / in menus: treat silence as "parked" (debrief time)
+                quiet = time.time() - self.tr.last_packet_wall > 3
+                self.sched.tick({"paused": True} if quiet else self.ctx())
+                if quiet:
+                    continue
                 if self.tr.is_race and n % 20 == 0:
                     self.race = strategy.race_snapshot(self.tr, self.gaps, self.tyres)
                     msgs = radio.race_messages(self.race, self.cfg.sass, self.last_calls)

@@ -135,3 +135,13 @@ def test_real_capture_end_to_end():
     assert "Village" in [c["corner"] for c in e.reports[1].losses]
     ans = e.ask("Where am I losing time?")
     assert "Village" in ans
+
+
+def test_garage_debrief_waits_until_parked():
+    said = []
+    s = radio.RadioScheduler(lambda t, p: said.append(t))
+    s.push([radio.Message(6, radio.CLOCK(), "Long debrief " * 40, "garage", 900, "g")])
+    s.tick({"throttle": 1.0, "steer": 0.0, "brake": 0.0, "time_to_brake": 30.0})
+    assert not said
+    s.tick({"paused": True})
+    assert said

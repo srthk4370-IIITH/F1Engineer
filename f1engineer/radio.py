@@ -168,10 +168,15 @@ class RadioScheduler:
         # top one has waited > 15 s for a long-enough straight.
         top = self.queue[0]
         candidates = self.queue if now - top.created > 15 else [top]
+        parked = bool(ctx.get("paused") or ctx.get("in_garage"))
         for m in candidates:
-            if m.kind == "urgent" and win > 1.5 or m.duration <= win:
-                self.queue.remove(m)
-                self.busy_until = now + m.duration
-                self.spoken_keys[m.key] = now
-                self.say(m.text, m.priority)
-                return
+            if m.kind == "garage":
+                if not parked:
+                    continue  # full debriefs only when the car is parked
+            elif not (m.kind == "urgent" and win > 1.5 or m.duration <= win):
+                continue
+            self.queue.remove(m)
+            self.busy_until = now + m.duration
+            self.spoken_keys[m.key] = now
+            self.say(m.text, m.priority)
+            return

@@ -1,5 +1,9 @@
 # F1 Engineer — Overnight Implementation Plan
 
+> **Status 2026-10-28 05:00:** phases 1–7 and 9–10 done and tested (11 tests incl. real-capture end-to-end).
+> Phase 8 is partial: watcher, autostart and the UDP config tool are done; native F1 22–25 parsers are not built
+> (the format dispatch is in place). Details and measurements are in HANDBOOK.md §7–§12.
+
 A local, low-latency **teaching race engineer** for F1 2020 (designed for 2020–2025). It reads the game's UDP telemetry, analyses every lap corner by corner, tells you where you lost or gained time and why, suggests setup changes, runs race strategy, and talks with you over push-to-talk.
 
 Decisions and context live in `HANDBOOK.md` §2. This file is the build plan.

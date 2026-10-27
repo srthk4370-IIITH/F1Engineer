@@ -120,3 +120,29 @@ If context is lost, read this file first, then `PLAN.md`.
 
 ## 10. Status / what's built
 See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, flashbacks, restarts, ghosts), analysis (lapmath, coach, setup_advisor, strategy, trackmap, ghost), radio (templates + sass + scheduler), llm (agent, Mock/OpenAI providers, knowledge), speech (Piper, Whisper GPU/CPU, PTT key/XInput/UDP, VRAM watchdog), storage (SQLite + npz, retention), web (FastAPI + WS + uPlot dashboard), guard (priority, memory/disk watchdogs, lock, rotating logs), watcher (game detection, autostart), gameconfig (safe UDP enable/restore), onboarding (setup wizard, doctor), sim/forge (synthetic 20-car race), tools (record, replay, bench_latency), tests (9).
+
+## 11. Overnight log (2026-10-28, autonomous)
+- 03:00–03:25 F1 2020 parser validated on real capture; tracker (laps/restarts/flashbacks); ghost reconstruction; Silverstone corner table from plotted track map.
+- 03:25–03:40 Lap analysis calibrated (slip thresholds, yaw sign, brake points); coach report, setup advisor, strategy, radio templates with sass; LLM agent (mock + OpenAI); storage; engine; replay tool. Full real session → correct debriefs.
+- 03:40–04:00 Speech: Piper + faster-whisper; CPU too slow for base.en (1.2 s) → tiny.en on CPU (0.6 s), base.en on GPU (0.06 s) with pip CUDA libs; VRAM watchdog → CPU fallback in 0.3 s.
+- 04:00–04:15 Dashboard (FastAPI + WS + uPlot), watcher + autostart, guarded UDP config tool, CLI, onboarding wizard + doctor, README, setup.ps1, tests.
+- 04:15–04:45 Soak tests over real UDP with 20-car forged race:
+  - BUG: CarStatus dict conversion for 22 cars per packet = 14% CPU → lazy conversion → 0.8%.
+  - BUG: Piper/ONNX Runtime arena grew +300 MB → disabled arena → flat 158 MB.
+  - BUG: `__main__.py` lacked a main guard → spawned speech process re-ran the CLI.
+  - BUG: uvicorn `dictConfig` closed our log handler → own rotating log writer.
+  - BUG: UDP bind failure killed only the UDP thread silently → fail fast with retry, watcher restarts.
+  - BUG: orphaned speech worker possible → worker exits when parent dies (verified).
+  - BUG: no websocket lib → added `websockets`.
+  - Final soak: RSS flat ~400 MB total (engine ~150 + speech ~250), ~4–5% of one core at real time in a 20-car race.
+- Watcher verified with a renamed dummy `F1_2020.exe`: engineer started in ~4 s, stopped 45 s after the "game" closed.
+- OpenAI path verified against a fake OpenAI-compatible streaming server (tool-call deltas, tool round trip, sentence streaming).
+- Cleaned test data out of `data/` (kept `data/captures/real_f1_2020_session1.f1cap` + `forged_race.f1cap`). Deleted my unused small.en model.
+- Disk: C: free went 32 → 13 GB overnight. Mine: ~2.4 GB venv (incl. 2 GB CUDA libs), 0.28 GB models, 0.28 GB captures, uv cache grew ~2 GB (shared cache, NOT pruned because other projects may use it). The rest is not from this project.
+- Never touched: qidk, F1 22 config, anything outside the project except the F1 2020 UDP setting (backed up).
+
+## 12. Tomorrow (with the user)
+1. Put the OpenAI key in `.env` (or `uv run f1engineer setup`), then `uv run python tools/bench_latency.py` for real LLM latency; tune the model (`OPENAI_MODEL`) and prompt.
+2. Drive a real session with `uv run f1engineer run`: check radio timing on straights, PTT (hold T / right-stick click), voice choice and volume.
+3. Decide on `uv run f1engineer autostart on`.
+4. Ideas not done: native parsers for F1 22–25 formats; per-track corner names beyond Silverstone (auto "Turn N" otherwise); tyre-temperature-based setup advice; in-game overlay.
