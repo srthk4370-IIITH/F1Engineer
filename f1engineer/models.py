@@ -54,4 +54,8 @@ def ensure_whisper(cfg: Config) -> Path:
 if __name__ == "__main__":
     c = Config()
     print(ensure_piper(c))
-    print(ensure_whisper(c))
+    import copy
+    for m in ("tiny.en", "base.en"):
+        cc = copy.copy(c)
+        cc.stt_model = m
+        print(ensure_whisper(cc))

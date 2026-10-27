@@ -82,20 +82,29 @@ def _gpu_ok(cfg) -> bool:
 
 
 class STT:
+    """faster-whisper. model "auto" = base.en on a free GPU, tiny.en on CPU (~0.6 s per command)."""
+
     def __init__(self, cfg):
+        import copy
         from faster_whisper import WhisperModel
         from f1engineer.models import ensure_whisper
-        path = ensure_whisper(cfg)
         self.device = "cpu"
+        self.model = None
+        auto = cfg.stt_model == "auto"
         if _gpu_ok(cfg):
+            c = copy.copy(cfg)
+            c.stt_model = "base.en" if auto else cfg.stt_model
             try:  # CUDA needs cuBLAS/cuDNN DLLs; the warm-up proves they load
-                self.model = WhisperModel(str(path), device="cuda", compute_type="float16")
+                self.model = WhisperModel(str(ensure_whisper(c)), device="cuda", compute_type="float16")
                 self.transcribe(np.zeros(16000, np.float32))
-                self.device = "cuda"
+                self.device, self.name = "cuda", c.stt_model
             except Exception:
                 self.model = None
-        if self.device == "cpu":
-            self.model = WhisperModel(str(path), device="cpu", compute_type="int8", cpu_threads=4)
+        if self.model is None:
+            c = copy.copy(cfg)
+            c.stt_model = "tiny.en" if auto else cfg.stt_model
+            self.model = WhisperModel(str(ensure_whisper(c)), device="cpu", compute_type="int8", cpu_threads=4)
+            self.name = c.stt_model
             self.transcribe(np.zeros(16000, np.float32))  # warm-up
 
     def transcribe(self, audio16k: np.ndarray) -> str:
@@ -152,7 +161,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     log(f"TTS ready ({time.perf_counter() - t:.1f}s)")
     t = time.perf_counter()
     stt = STT(cfg)
-    log(f"STT ready on {stt.device} ({time.perf_counter() - t:.1f}s)")
+    log(f"STT {stt.name} ready on {stt.device} ({time.perf_counter() - t:.1f}s)")
     outq.put(("ready", stt.device))
 
     say_q: queue.PriorityQueue = queue.PriorityQueue()

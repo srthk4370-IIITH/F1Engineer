@@ -30,7 +30,7 @@ class Config:
     sass: int = field(default_factory=lambda: _env("F1E_SASS", 2, int))
     ptt_key: str = field(default_factory=lambda: _env("F1E_PTT_KEY", "t"))
     ptt_game_button: str = field(default_factory=lambda: _env("F1E_PTT_BUTTON", "RS"))  # see packets_2020.BUTTONS
-    stt_model: str = field(default_factory=lambda: _env("F1E_STT_MODEL", "base.en"))
+    stt_model: str = field(default_factory=lambda: _env("F1E_STT_MODEL", "auto"))
     tts_voice: str = field(default_factory=lambda: _env("F1E_TTS_VOICE", "en_GB-alan-medium"))
     gpu: str = field(default_factory=lambda: _env("F1E_GPU", "auto"))  # auto | off
     speech: bool = field(default_factory=lambda: _env("F1E_SPEECH", True, bool))
