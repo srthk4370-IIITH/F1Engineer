@@ -108,6 +108,12 @@ class MockProvider:
             yield from ({"type": "text", "text": w + " "} for w in self._summarise(data).split(" "))
             return
         q = last["content"].lower()
+        from f1engineer.analysis.coach import TRACK_NAMES
+        corners = {n.lower().replace("the ", "") for t in TRACK_NAMES.values() if isinstance(t, dict) for n in t.values()}
+        hit = next((c for c in sorted(corners, key=len, reverse=True) if c.split("/")[0] in q), None)
+        if hit:
+            yield {"type": "tool_call", "id": "mock1", "name": "get_corner_history", "args": json.dumps({"corner": hit.split("/")[0]})}
+            return
         for keys, tool in self.ROUTES:
             if any(k in q for k in keys):
                 yield {"type": "tool_call", "id": "mock1", "name": tool, "args": "{}"}
@@ -124,6 +130,10 @@ class MockProvider:
             c = d["losses"][0]
             return (f"Biggest loss is {c['corner']}, {c['time_loss']:.2f}. "
                     f"{(c['causes'] or ['slower there'])[0].capitalize()}. Be a man, brake later.")
+        if "laps" in d and "corner" in d:
+            last = d["laps"][-1]
+            cause = (last["causes"] or ["nothing obvious"])[0]
+            return f"{d['corner'].title()}, last lap you lost {last['time_loss']:.2f}: {cause}."
         if "advice" in d:
             a = d["advice"][:1]
             return f"Try {a[0]['change']}. {a[0]['why'].capitalize()}." if a else "Setup looks fine, it's the driver."

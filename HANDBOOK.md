@@ -79,3 +79,44 @@ If context is lost, read this file first, then `PLAN.md`.
 - **Personality update (user):** calm, concise pro **but a bit sassy**, with banter like "be a man", "my nan brakes later than that". Implement as a configurable `sass` level (0–3, default 2) in the prompts and template lines. Never sassy in safety-critical or strategy-critical calls.
 - **03:00** User left. Autonomous mode from here.
 - PTT default key: `T` (no answer from user, so I'm deciding). PB reference lap per track kept beyond the 2-session retention (my decision, tiny).
+
+---
+
+## 7. Verified facts from the real capture (2026-10-28)
+- All 84,782 packets parse at exactly the spec sizes (2020). Game sends ~54 Hz per main packet at sendRate 60.
+- **Time Trial participants:** idx0 "Player", idx1 "Default Ghost", idx2 "Personal Best". Ghosts send **CarTelemetry + Motion but NO LapData** (lapNum 0).
+  We rebuild ghost laps by projecting world x/z onto a track map (5 m grid) learned from the first clean player lap. Accuracy ~0.07 s.
+- **TT ghosts reset when the player crosses the line**, so a ghost "lap" is cut short. We extrapolate the last ≤200 m from speed.
+- Default Ghost parks after its first lap (game behaviour).
+- **Keyboard signature:** steer only {-1, 0, +1} (3 unique values), throttle/brake 0/1. Controller: hundreds of values. Detection = >97% digital.
+- **Keyboard keys appear in buttonStatus** (throttle→RT 0x1000, steering→DPAD L/R, etc.), so game-button PTT must use a non-driving button (default RS = right-stick click).
+- Assists in CarStatus: keyboard laps TC=2 ABS=1; controller laps TC 0/1, ABS 0/1 (matches user).
+- **Yaw rate sign is opposite to frontWheelsAngle** (corr −0.9). Understeer metric = |δ| − |r|·L/v, baseline ~0.05 rad for this car, so balance is reported *relative* by corner-speed class.
+- **Wheel slip:** ABS-on braking peaks ~0.09; real lock-ups saturate at 1.0 → lock-up = front slip > 0.2 for ≥3 samples while braking. Wheelspin = rear > 0.12 for ≥8 samples on throttle.
+- Surfaces seen: 0 tarmac, 1 rumble, 4 gravel, 7 grass. Off-track = ≥2 wheels on {3..8} for ≥6 grid points.
+- Silverstone (trackId 7, length 5891 m) corners by apex distance: Abbey/Farm 480, Village 900, **the Loop 1040 (slowest, 78 km/h)**, Brooklands 1980, Luffield 2060 / exit 2175, Copse 3160, Maggotts/Becketts 3880, Chapel 4080, Stowe 5050, Vale 5530. Table in `f1engineer/data/tracks.json`.
+- User's laps: L1 90.427 (kb, invalid), L2 89.098 (kb, invalid, PB), L3 94.598 (controller, lock-up at Luffield, big losses Village/Vale/Luffield exit). The lap-1 out-lap restart and the lap-3 restarts are detected as "lap restarted".
+- The user's machine also has an F1 22 config (format 2022, UDP disabled) but **F1 22 is not installed**. Left untouched.
+
+## 8. Performance (measured)
+| Metric | Value |
+|---|---|
+| Ingest | ~30 µs/packet → **0.8% of one core** at ~270 pkt/s (was 14% before lazy CarStatus conversion) |
+| Lap analysis | 3–10 ms per lap |
+| Full-session replay | 160× real time |
+| Piper TTS | 130–400 ms per sentence (CPU) |
+| Whisper GPU (base.en fp16) | ~60 ms per command; small.en ~175 ms |
+| Whisper CPU (tiny.en int8) | ~570–940 ms; base.en ~1.2 s |
+| PTT release → first audio (CPU STT, mock LLM) | ~1.16 s (GPU STT: ~0.3 s + LLM) |
+| Speech worker startup | ~5 s |
+
+## 9. Gotchas
+- `uv add/remove/sync` **without `--extra gpu` deletes the CUDA libs** (2 GB). Always run `uv sync --extra gpu` on this machine.
+- `uv run` blocks while another uv process holds the venv lock; use `.venv/Scripts/python.exe` directly in that case.
+- faster-whisper CUDA needs cuBLAS 12 + cuDNN 9 DLLs: pip `nvidia-cublas-cu12`, `nvidia-cudnn-cu12` + `os.add_dll_directory` (done in `speech._register_cuda_dlls`).
+- numpy `void.tolist()` leaves sub-array fields as ndarrays; convert them (done in `_rec_to_dict`).
+- `_Tee` (log redirect) needs `isatty()`, or uvicorn crashes silently in its thread.
+- Default OpenAI model `gpt-4.1-mini` (overridable via `OPENAI_MODEL`). **Verify the model name and latency when the key arrives.**
+
+## 10. Status / what's built
+See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, flashbacks, restarts, ghosts), analysis (lapmath, coach, setup_advisor, strategy, trackmap, ghost), radio (templates + sass + scheduler), llm (agent, Mock/OpenAI providers, knowledge), speech (Piper, Whisper GPU/CPU, PTT key/XInput/UDP, VRAM watchdog), storage (SQLite + npz, retention), web (FastAPI + WS + uPlot dashboard), guard (priority, memory/disk watchdogs, lock, rotating logs), watcher (game detection, autostart), gameconfig (safe UDP enable/restore), onboarding (setup wizard, doctor), sim/forge (synthetic 20-car race), tools (record, replay, bench_latency), tests (9).

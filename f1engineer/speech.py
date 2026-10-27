@@ -107,6 +107,20 @@ class STT:
             self.name = c.stt_model
             self.transcribe(np.zeros(16000, np.float32))  # warm-up
 
+    def to_cpu(self, cfg) -> None:
+        """Release the GPU (another program needs VRAM) and continue on CPU."""
+        import copy
+        import gc
+        from faster_whisper import WhisperModel
+        from f1engineer.models import ensure_whisper
+        c = copy.copy(cfg)
+        c.stt_model = "tiny.en" if cfg.stt_model == "auto" else cfg.stt_model
+        cpu = WhisperModel(str(ensure_whisper(c)), device="cpu", compute_type="int8", cpu_threads=4)
+        self.model, old = cpu, self.model
+        del old
+        gc.collect()
+        self.device, self.name = "cpu", c.stt_model
+
     def transcribe(self, audio16k: np.ndarray) -> str:
         segs, _ = self.model.transcribe(audio16k, language="en", beam_size=1, initial_prompt=STT_PROMPT,
                                         vad_filter=False, condition_on_previous_text=False, without_timestamps=True)
@@ -255,6 +269,26 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             time.sleep(0.02)
 
     threading.Thread(target=pad_poll, daemon=True).start()
+
+    def gpu_watch():
+        """Cooperate with other GPU users: if free VRAM gets low, give ours back and use the CPU."""
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            h = pynvml.nvmlDeviceGetHandleByIndex(0)
+        except Exception:
+            return
+        while stt.device == "cuda":
+            time.sleep(3)
+            try:
+                free_mb = pynvml.nvmlDeviceGetMemoryInfo(h).free / 1e6
+            except Exception:
+                continue
+            if free_mb < 600 and not rec["on"]:
+                stt.to_cpu(cfg)
+                log(f"GPU memory low ({free_mb:.0f} MB free): speech recognition moved to CPU ({stt.name})")
+
+    threading.Thread(target=gpu_watch, daemon=True).start()
 
     while True:
         msg = inq.get()
