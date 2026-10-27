@@ -9,6 +9,7 @@ and the game's own UDP button state forwarded by the core.
 from __future__ import annotations
 
 import ctypes
+import re
 import multiprocessing as mp
 import queue
 import threading
@@ -35,6 +36,27 @@ def radio_fx(x: np.ndarray, sr: int) -> np.ndarray:
     return np.concatenate([click, y, click * 0.6])
 
 
+_SPEAK_RULES = [
+    (re.compile(r"\b(\d):(\d\d)\.(\d)(\d)\d?\b"), r"\1 \2 point \3 \4"),   # 1:29.098 -> "1 29 point 0 9"
+    (re.compile(r"\bkm/h\b"), "k p h"),
+    (re.compile(r"(\d+) ?m\b"), r"\1 metres"),
+    (re.compile(r"(\d+)%"), r"\1 percent"),
+    (re.compile(r"\s*->\s*"), " to "),
+    (re.compile(r"\bP(\d+)\b"), r"P \1"),
+    (re.compile(r"\bDRS\b"), "D R S"),
+    (re.compile(r"\bERS\b"), "E R S"),
+    (re.compile(r"\bSC\b"), "safety car"),
+    (re.compile(r"\bVSC\b"), "virtual safety car"),
+]
+
+
+def speakable(text: str) -> str:
+    """Radio text as it should be *said* (the dashboard keeps the written form)."""
+    for pat, rep in _SPEAK_RULES:
+        text = pat.sub(rep, text)
+    return text
+
+
 class TTS:
     def __init__(self, cfg, fx: bool = True):
         from piper import PiperVoice
@@ -51,7 +73,7 @@ class TTS:
         self.fx = fx
 
     def synth(self, text: str) -> np.ndarray:
-        pcm = b"".join(ch.audio_int16_bytes for ch in self.voice.synthesize(text))
+        pcm = b"".join(ch.audio_int16_bytes for ch in self.voice.synthesize(speakable(text)))
         x = np.frombuffer(pcm, dtype=np.int16)
         return radio_fx(x, self.sr) if self.fx else x.astype(np.float32) / 32768.0
 
