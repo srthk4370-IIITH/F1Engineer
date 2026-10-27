@@ -17,7 +17,7 @@ from f1engineer.telemetry import packets_2020 as P
 CAR_CHANNELS = ("dist", "t", "speed", "throttle", "brake", "steer", "gear", "rpm", "drs")
 PLAYER_CHANNELS = ("x", "z", "yaw_rate", "wheels_angle", "slip_rl", "slip_rr", "slip_fl", "slip_fr",
                    "glat", "glon", "surface")
-OFF_TRACK_SURFACES = {4, 5, 6, 7, 8, 9, 11}  # grass, gravel, cobble?, mud, sand, ... (anything not tarmac/rumble)
+OFF_TRACK_SURFACES = {3, 4, 5, 6, 7, 8}  # rock, gravel, mud, sand, grass, water (tarmac/rumble/concrete are fine)
 
 
 @dataclass

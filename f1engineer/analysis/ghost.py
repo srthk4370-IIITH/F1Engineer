@@ -24,16 +24,22 @@ class GhostTracker:
             return
         L = tmap.track_length
         if self.last_d is not None and self.last_d > L - 200 and d < 200:
-            # crossed the line: close the lap (interpolated crossing time is good to ~1 frame)
-            if self.lap is not None and self.lap.n() > 50 and self.lap.channels["dist"][0] < 150:
-                self.lap.lap_time = session_time - self.t0
-                self.lap.complete = True
-                self.on_lap(self.lap.finalize())
+            # Line crossed, or (Time Trial) the ghost was reset because the player crossed first.
+            # Close the lap, extrapolating the last metres from current speed (exact if it got there itself).
+            lap = self.lap
+            if lap is not None and lap.n() > 50 and lap.channels["dist"][0] < 150:
+                remaining = max(0.0, L - lap.channels["dist"][-1])
+                v = max(lap.channels["speed"][-1] / 3.6, 10.0)
+                lap.lap_time = lap.channels["t"][-1] + remaining / v
+                lap.complete = True
+                if remaining > 2:  # pad the trace to the line so resampling covers the full lap
+                    lap.append({**{k: lap.channels[k][-1] for k in lap.channels}, "dist": L, "t": lap.lap_time})
+                self.on_lap(lap.finalize())
             self.lap_num += 1
             self.lap = Lap(self.idx, self.lap_num)
             self.t0 = session_time
         elif self.last_d is not None and abs(d - self.last_d) > 300:
-            self.lap = None  # ghost reset/teleported
+            self.lap = None  # ghost reset/teleported mid-lap
         self.last_d = d
         if self.lap is not None:
             self.lap.append({"dist": d, "t": session_time - self.t0, "speed": float(tel["speed"]),
