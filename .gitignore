@@ -1,0 +1,21 @@
+# secrets
+.env
+*.key
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+*.egg-info/
+# local data / models (downloaded at onboarding, never committed)
+data/
+models/
+*.gguf
+*.onnx
+*.bin
+logs/
+# os/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
