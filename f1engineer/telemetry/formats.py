@@ -237,7 +237,7 @@ class Adapter:
         pid = data[self.pid_offset]
         entry = self.layout.get(pid)
         if entry is None:
-            return None
+            return (pid, None) if pid < 16 else None   # a real packet we don't need (lobby, history, tyre sets...)
         dt, mode = entry
         if mode == "min":   # variable tail (forecast samples / event details): pad or trim to our layout
             need = dt.fields["numWeatherForecastSamples"][1] + 1 if pid == 1 else dt.fields["eventStringCode"][1] + 4

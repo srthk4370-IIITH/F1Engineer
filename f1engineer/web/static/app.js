@@ -28,6 +28,7 @@ function renderState(s) {
   $("conn").textContent = s.offline ? "review mode" : s.connected ? "live" : "waiting for game";
   $("liveoff").classList.toggle("hidden", !s.offline);
   if (s.offline) return;   // review mode: the header shows the reviewed lap instead
+  $("h-game").textContent = s.game || "-";
   $("h-track").textContent = s.track || "-"; $("h-mode").textContent = s.mode || "-";
   $("h-input").textContent = s.input_device || "-";
   $("h-ref").textContent = s.reference ? `${s.reference.label} ${fmt(s.reference.time)}` : "-";
