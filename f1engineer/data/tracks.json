@@ -1,0 +1,17 @@
+{
+ "_comment": "Corner names by approximate apex lap-distance (m) for the F1 2020 layouts. Built from real capture where available; other tracks fall back to 'Turn N'.",
+ "Silverstone": {
+  "480": "Abbey/Farm",
+  "900": "Village",
+  "1040": "the Loop",
+  "1980": "Brooklands",
+  "2060": "Luffield",
+  "2175": "Luffield exit",
+  "3160": "Copse",
+  "3880": "Maggotts/Becketts",
+  "4080": "Chapel",
+  "5050": "Stowe",
+  "5530": "Vale",
+  "5640": "Club"
+ }
+}

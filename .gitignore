@@ -8,12 +8,12 @@ __pycache__/
 .pytest_cache/
 *.egg-info/
 # local data / models (downloaded at onboarding, never committed)
-data/
-models/
+/data/
+/models/
 *.gguf
 *.onnx
 *.bin
-logs/
+/logs/
 *.f1cap
 *.db
 *.npz
@@ -27,4 +27,4 @@ logs/
 Thumbs.db
 .vscode/
 .idea/
-scratch/
+/scratch/
