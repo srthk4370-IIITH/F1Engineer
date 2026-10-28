@@ -141,3 +141,34 @@ ul.advice { margin: 0; padding-left: 18px; } ul.advice li { margin-bottom: 6px; 
   .sidebar { position: static; max-height: 40vh; }
   nav { margin-left: 0; }
 }
+
+/* ---------- F1 broadcast look ---------- */
+.brand { font-style: italic; }
+.ph { font-style: italic; font-weight: 900; font-size: 12px; color: var(--text); border-left: 3px solid var(--red); padding-left: 7px; align-items: center; }
+.ph .muted { font-style: normal; }
+.side-head { font-style: italic; font-weight: 900; font-size: 14px; }
+.sectionhead { font-style: italic; font-weight: 900; text-transform: uppercase; letter-spacing: 2px; font-size: 16px; margin: 18px 0 10px;
+  display: flex; align-items: center; gap: 10px; }
+.sectionhead::before { content: ""; width: 26px; height: 14px; background: var(--red); transform: skewX(-20deg); }
+.stat .v, .lapchip .nm b, .gap, .big { font-style: italic; }
+.importing { background: rgba(225, 6, 0, .12); border: 1px solid var(--red); color: var(--text); font-size: 12px; padding: 6px 8px; border-radius: 4px; margin-bottom: 8px; }
+
+/* timing tower lap rows with sector blocks */
+.review { grid-template-columns: 330px 1fr; }
+.laprow { grid-template-columns: 16px 30px 74px 1fr 24px; background: linear-gradient(90deg, #191c22, #14161b); margin-bottom: 2px; }
+.secs { display: flex; gap: 2px; justify-content: flex-end; }
+.secs span { width: 26px; height: 6px; border-radius: 1px; background: #3a3f4a; }
+.secs span.p { background: var(--purple); } .secs span.g { background: var(--green); } .secs span.y { background: var(--yellow); }
+.laprow .meta { grid-column: 4; }
+
+/* segmented toggles */
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; font-style: normal; }
+.seg button { background: none; border: 0; color: var(--dim); font: 700 10px var(--font); text-transform: uppercase; letter-spacing: 1px; padding: 3px 8px; cursor: pointer; }
+.seg button.on { background: var(--red); color: #fff; }
+.maplegend { font-size: 11px; margin: -4px 0 4px; min-height: 14px; }
+canvas.sq { width: 100%; aspect-ratio: 1; display: block; }
+
+.analysis { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(360px, 1fr)); }
+.analysis canvas { width: 100%; display: block; }
+table.sectab td.p { color: var(--purple); font-weight: 700; } table.sectab td.g { color: var(--green); font-weight: 700; }
+table.sectab td.y { color: var(--yellow); }

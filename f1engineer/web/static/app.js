@@ -17,8 +17,13 @@ document.querySelectorAll("nav button").forEach((b) => b.onclick = () => { histo
 // ================================================================ live
 let lastReportKey = null;
 function tempColor(t) { return t < 75 ? "#2b4f7a" : t < 90 ? "#2b6f55" : t < 105 ? "#3c7a2b" : t < 115 ? "#7a6a2b" : "#7a2b2b"; }
+let wasImporting = false;
 function renderState(s) {
   OFFLINE = !!s.offline;
+  $("importing").classList.toggle("hidden", !s.importing);
+  if (s.importing) $("importing").textContent = `Importing recording ${s.importing}…`;
+  if (wasImporting && !s.importing) loadLaps();
+  wasImporting = !!s.importing;
   $("dot").classList.toggle("on", !!s.connected);
   $("conn").textContent = s.offline ? "review mode" : s.connected ? "live" : "waiting for game";
   $("liveoff").classList.toggle("hidden", !s.offline);
@@ -112,7 +117,19 @@ async function loadLaps() {
   renderLapList();
 }
 function bestOf(sess) { const v = LAPS.filter((l) => l.session === sess && l.lap_time > 0); return v.reduce((b, l) => (!b || l.lap_time < b.lap_time ? l : b), null); }
+function sectorColours() {
+  const out = new Map(), bySess = new Map();
+  for (const l of LAPS) if (l.sectors && l.car === "Player") { if (!bySess.has(l.session)) bySess.set(l.session, []); bySess.get(l.session).push(l); }
+  for (const laps of bySess.values()) {
+    laps.sort((a, b) => a.lap - b.lap || a.id - b.id);
+    const best = [0, 1, 2].map((k) => Math.min(...laps.map((l) => l.sectors[k] || 1e9)));
+    const run = [1e9, 1e9, 1e9];
+    for (const l of laps) out.set(l.id, l.sectors.map((v, k) => { const c = v === best[k] ? "p" : v <= run[k] ? "g" : "y"; run[k] = Math.min(run[k], v); return c; }));
+  }
+  return out;
+}
 function renderLapList() {
+  const SC = sectorColours();
   const groups = new Map();
   for (const l of LAPS) { if (!groups.has(l.session)) groups.set(l.session, []); groups.get(l.session).push(l); }
   if (!LAPS.length) { $("lapgroups").innerHTML = '<div class="muted">No laps stored yet.</div>'; return; }
@@ -128,7 +145,7 @@ function renderLapList() {
           <span class="${A && A.id === l.id ? "cA" : "cB"}">${A && A.id === l.id ? "A" : B && B.id === l.id ? "B" : ""}</span>
           <span class="ln">${isGhost ? '<span class="ghost">PB</span>' : "L" + l.lap}</span>
           <span class="lt ${best && best.id === l.id ? "best" : ""} ${l.valid ? "" : "inv"}">${fmt(l.lap_time)}</span>
-          <span class="meta">${l.valid ? "" : "invalid · "}${inp}</span>
+          <span class="meta">${SC.has(l.id) ? `<span class="secs" title="S1 ${(l.sectors[0] / 1000).toFixed(3)} · S2 ${(l.sectors[1] / 1000).toFixed(3)} · S3 ${(l.sectors[2] / 1000).toFixed(3)}">${SC.get(l.id).map((c) => `<span class="${c}"></span>`).join("")}</span>` : ""}${l.valid ? "" : "invalid · "}${inp}</span>
           <button class="bbtn" data-b="${l.id}" title="Compare as lap B">B</button></div>`;
       }).join("") + "</div>";
   }).join("");
@@ -142,6 +159,7 @@ async function getLap(id) {
   return cache.get(id);
 }
 async function setLaps(a, b) {
+  if (b != null && (!B || B.id !== b) && MAPMODE === "speed") document.querySelector('#mapmode button[data-m="delta"]').click();
   A = a != null ? await getLap(a) : null; B = b != null && b !== a ? await getLap(b) : null;
   history.replaceState(null, "", `#review?a=${A ? A.id : ""}${B ? "&b=" + B.id : ""}`);
   renderLapList(); drawAll();
@@ -202,7 +220,7 @@ function drawAll() {
   if (!A) return;
   X = A.trace.dist; SEG = segments(A);
   if (OFFLINE) { $("h-track").textContent = A.track || "-"; $("h-input").textContent = A.input || "ghost"; $("h-mode").textContent = LAPS.find((l) => l.id === A.id)?.type || "-"; }
-  drawStats(); drawMinis(); drawCharts(); drawCornerTable(); drawNotes(); drawMap(); cursorAt(null);
+  drawStats(); drawMinis(); drawCharts(); drawCornerTable(); drawNotes(); drawMap(); cursorAt(null); drawAnalysis();
 }
 function chipFill() {
   const chip = (l) => l ? `<b>${fmt(l.lap_time)}</b> &nbsp;${lapName(l)} · ${esc(l.input || "ghost")}${l.valid === false ? " · invalid" : ""}` : null;
@@ -288,9 +306,11 @@ function drawCharts() {
   if (A.trace.rpm) { [se, da] = pair("rpm"); add("rpm", se, da, 120, { yl: "RPM" }); }
   [se, da] = pair("steer"); add("steer", se, da, 100, { yl: "Steering", y: { range: [-1.05, 1.05] }, splits: [-1, 0, 1] });
   if (A.trace.glat) { [se, da] = pair("glat"); add("glat", se, da, 100, { yl: "Lateral G" }); }
+  if (A.trace.glon) { [se, da] = pair("glon"); add("glon", se, da, 100, { yl: "Long. G" }); }
   if (A.trace.slip_f) { [se, da] = pair("slip_f"); add("slip", se, da, 100, { yl: "Front slip" }); }
+  if (A.trace.drs && A.trace.drs.some((v) => v > 0)) { [se, da] = pair("drs", (v) => v, true); add("drs", se, da, 70, { yl: "DRS", y: { range: [0, 1.1] }, splits: [0, 1] }); }
 }
-function resizeCharts() { const w = Math.max(300, $("charts").clientWidth - 16); plots.forEach((p) => p.setSize({ width: w, height: p.height })); if (A) drawMap(); }
+function resizeCharts() { const w = Math.max(300, $("charts").clientWidth - 16); plots.forEach((p) => p.setSize({ width: w, height: p.height })); if (A) { drawMap(); drawAnalysis(); } }
 window.addEventListener("resize", resizeCharts);
 
 function drawCornerTable() {
@@ -320,7 +340,11 @@ function drawNotes() {
 }
 
 // ---- track map: colour by speed (single lap) or by who is faster (comparison); synced cursor
-let mapBase = null, mapGeo = null;
+let mapBase = null, mapGeo = null, MAPMODE = "speed";
+document.querySelectorAll("#mapmode button").forEach((b) => b.onclick = () => {
+  MAPMODE = b.dataset.m; document.querySelectorAll("#mapmode button").forEach((x) => x.classList.toggle("on", x === b));
+  if (A) { drawMap(); cursorAt(null); }
+});
 function drawMap() {
   const c = $("map"), dpr = devicePixelRatio || 1, size = c.clientWidth || 360;
   c.width = size * dpr; c.height = size * dpr;
@@ -335,11 +359,21 @@ function drawMap() {
   g.lineCap = "round"; g.lineJoin = "round";
   g.strokeStyle = "#2c313b"; g.lineWidth = 11 * dpr; g.beginPath(); xs.forEach((x, i) => { const [px, pz] = P(x, zs[i]); i ? g.lineTo(px, pz) : g.moveTo(px, pz); }); g.stroke();
   let col;
-  if (B) {
+  if (MAPMODE === "gear") {
+    const gc = ["#555", "#3b4cc0", "#5977e3", "#7b9ff9", "#9ebeff", "#f7b89c", "#f08a6c", "#d65244", "#b40426"];
+    col = (i) => gc[Math.max(0, Math.min(8, Math.round(t.gear[i])))];
+    $("maplegend").innerHTML = "gear: " + [1, 2, 3, 4, 5, 6, 7, 8].map((g) => `<span style="color:${gc[g]}">■${g}</span>`).join(" ");
+  } else if (MAPMODE === "pedals") {
+    col = (i) => t.brake[i] > 0.05 ? `rgba(225,6,0,${0.45 + 0.55 * t.brake[i]})` : t.throttle[i] > 0.98 ? "#20d47a" : t.throttle[i] > 0.05 ? "#ffd23d" : "#9aa0aa";
+    $("maplegend").innerHTML = '<span style="color:#20d47a">■ full throttle</span> <span style="color:#ffd23d">■ partial</span> <span style="color:#e10600">■ braking</span> <span style="color:#9aa0aa">■ coasting</span>';
+  } else if (B && MAPMODE === "delta") {
     const dl = X.map((d, i) => tAt(B, d) - t.t[i]), w = 12;
     col = (i) => { const v = (dl[Math.min(dl.length - 1, i + w)] - dl[Math.max(0, i - w)]); const k = Math.min(1, Math.abs(v) / 0.03);
       return Math.abs(v) < 0.002 ? "#9aa0aa" : v > 0 ? `rgba(0,210,255,${0.35 + 0.65 * k})` : `rgba(255,135,0,${0.35 + 0.65 * k})`; };
     $("maplegend").innerHTML = '<span class="cA">A faster</span> · <span class="cB">B faster</span>';
+  } else if (MAPMODE === "delta") {
+    col = () => "#9aa0aa";
+    $("maplegend").textContent = "pick a lap B to see who is faster where";
   } else {
     const lo = Math.min(...t.speed), hi = Math.max(...t.speed);
     col = (i) => `hsl(${(1 - (t.speed[i] - lo) / (hi - lo)) * 220},90%,55%)`;   // red = fast, blue = slow
@@ -368,6 +402,126 @@ function cursorAt(idx) {
     <div><span class="muted">Corner</span><b>${esc(corner ? corner.name : "-")}</b></div>
     <div><span class="muted">Thr / Brk</span><b>${two(`${(t.throttle[idx] * 100).toFixed(0)}/${(t.brake[idx] * 100).toFixed(0)}`, B && `${(B.trace.throttle[bi] * 100).toFixed(0)}/${(B.trace.brake[bi] * 100).toFixed(0)}`)}</b></div>
     <div><span class="muted">${B ? "Δ B−A" : "Lap time"}</span><b>${B ? sgn(tAt(B, d) - t.t[idx]) : fmt(t.t[idx])}</b></div>`;
+}
+
+// ---- analysis panels (plain canvas charts)
+function fitCanvas(c, hCss) {
+  const dpr = devicePixelRatio || 1, w = c.clientWidth || 360, h = hCss || +c.dataset.h || w;
+  c.width = w * dpr; c.height = h * dpr; c.style.height = h + "px";
+  const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  g.font = "600 11px Titillium Web, sans-serif"; g.textBaseline = "middle";
+  return { g, w, h };
+}
+function hbars(id, labels, series, opt = {}) {   // horizontal grouped bars, one row per label
+  const c = $(id); const rows = labels.length; if (!rows) { fitCanvas(c, 40).g.fillText("no data", 8, 20); return; }
+  const rowH = series.length > 1 ? 22 : 18, { g, w } = fitCanvas(c, rows * rowH + 24), left = 118, right = opt.signed ? 56 : 48;
+  const vals = series.flatMap((s) => s.values.filter((v) => v != null));
+  const lo = opt.signed ? Math.min(0, ...vals) : 0, hi = Math.max(opt.signed ? 0 : 1e-9, ...vals);
+  const X = (v) => left + (v - lo) / (hi - lo || 1) * (w - left - right);
+  g.strokeStyle = "#262a33"; g.beginPath(); g.moveTo(X(0), 4); g.lineTo(X(0), rows * rowH + 8); g.stroke();
+  labels.forEach((lab, r) => {
+    const y0 = 8 + r * rowH;
+    g.fillStyle = "#c9ccd1"; g.textAlign = "right"; g.fillText(lab, left - 8, y0 + rowH / 2);
+    series.forEach((s, k) => {
+      const v = s.values[r]; if (v == null) return;
+      const bh = (rowH - 6) / series.length, y = y0 + 2 + k * bh;
+      g.fillStyle = typeof s.color === "function" ? s.color(v) : s.color;
+      const x0 = X(Math.min(0, v)), x1 = X(Math.max(0, v)); g.fillRect(x0, y, Math.max(1, x1 - x0), bh - 1);
+      if (series.length === 1 || k === series.length - 1 || opt.labelAll) {
+        g.fillStyle = "#858c99";
+        if (opt.signed) { g.textAlign = "right"; g.fillText(opt.fmt ? opt.fmt(v) : v.toFixed(0), w - 2, y + bh / 2); }   // value column on the right
+        else { g.textAlign = "left"; g.fillText(opt.fmt ? opt.fmt(v) : v.toFixed(0), x1 + 4, y + bh / 2); }
+      }
+    });
+  });
+}
+function vbars(id, labels, series, opt = {}) {   // vertical grouped bars (distributions)
+  const { g, w, h } = fitCanvas($(id)), pad = 26, top = 10;
+  const hi = Math.max(1e-9, ...series.flatMap((s) => s.values));
+  const gw = (w - pad - 6) / labels.length, bw = (gw - 6) / series.length;
+  g.strokeStyle = "#262a33"; for (let k = 0; k <= 4; k++) { const y = top + (h - pad - top) * k / 4; g.beginPath(); g.moveTo(pad, y); g.lineTo(w, y); g.stroke(); }
+  labels.forEach((lab, i) => {
+    series.forEach((s, k) => {
+      const v = s.values[i], bh = (h - pad - top) * v / hi, x = pad + i * gw + 3 + k * bw;
+      g.fillStyle = s.color; g.fillRect(x, h - pad - bh, bw - 1, bh);
+    });
+    g.fillStyle = "#858c99"; g.textAlign = "center"; g.fillText(lab, pad + i * gw + gw / 2, h - pad / 2);
+  });
+  g.textAlign = "left"; g.fillStyle = "#858c99"; g.fillText(hi.toFixed(0) + (opt.unit || ""), 2, top);
+}
+function drawGG() {
+  const c = $("gg"); const { g, w, h } = fitCanvas(c, c.clientWidth || 360);
+  const R = Math.min(w, h) / 2 - 14, cx = w / 2, cy = h / 2;
+  const laps = [A, B].filter((l) => l && l.trace.glat && l.trace.glon);
+  const all = laps.flatMap((l) => [...l.trace.glat.map(Math.abs), ...l.trace.glon.map(Math.abs)]).sort((a, b) => a - b);
+  const m = Math.max(2, all.length ? all[Math.floor(all.length * 0.995)] : 3);   // ignore kerb/crash spikes
+  const S = R / Math.ceil(m);
+  g.strokeStyle = "#262a33"; g.fillStyle = "#858c99"; g.textAlign = "left";
+  for (let k = 1; k <= Math.ceil(m); k++) { g.beginPath(); g.arc(cx, cy, k * S, 0, 7); g.stroke(); g.fillText(k + "g", cx + k * S * 0.71 + 2, cy - k * S * 0.71); }
+  g.beginPath(); g.moveTo(cx - R, cy); g.lineTo(cx + R, cy); g.moveTo(cx, cy - R); g.lineTo(cx, cy + R); g.stroke();
+  g.textAlign = "center"; g.fillText("braking", cx, cy + R + 8); g.fillText("acceleration", cx, cy - R - 6);
+  laps.forEach((l, k) => {
+    g.fillStyle = k ? "rgba(255,135,0,0.35)" : "rgba(0,210,255,0.35)";
+    for (let i = 0; i < l.trace.glat.length; i++) if (Math.abs(l.trace.glat[i]) <= Math.ceil(m) && Math.abs(l.trace.glon[i]) <= Math.ceil(m)) g.fillRect(cx + l.trace.glat[i] * S - 1, cy - l.trace.glon[i] * S - 1, 2.2, 2.2);
+  });
+  if (!laps.length) { g.fillStyle = "#858c99"; g.fillText("no G-force data for this lap (ghost)", cx, cy); }
+}
+function drawAnalysis() {
+  if (!A) return;
+  drawGG();
+  // lap time progression for A's session
+  const sess = LAPS.find((l) => l.id === A.id)?.session, laps = LAPS.filter((l) => l.session === sess && l.car === "Player" && l.lap_time > 0).sort((a, b) => a.lap - b.lap || a.id - b.id);
+  const ghost = LAPS.filter((l) => l.session === sess && l.car !== "Player" && l.lap_time > 0).reduce((b, l) => !b || l.lap_time < b.lap_time ? l : b, null);
+  { const { g, w, h } = fitCanvas($("c-laps")), pad = 46;
+    if (laps.length) {
+      const ts = laps.map((l) => l.lap_time).concat(ghost ? [ghost.lap_time] : []), lo = Math.min(...ts) - 0.5, hi = Math.max(...ts) + 0.5;
+      const X = (i) => pad + (laps.length === 1 ? (w - pad) / 2 : i * (w - pad - 20) / (laps.length - 1)), Y = (v) => 12 + (v - lo) / (hi - lo) * (h - 40);
+      g.strokeStyle = "#262a33"; g.fillStyle = "#858c99"; g.textAlign = "right";
+      for (let k = 0; k <= 3; k++) { const v = lo + (hi - lo) * k / 3; g.beginPath(); g.moveTo(pad, Y(v)); g.lineTo(w, Y(v)); g.stroke(); g.fillText(fmt(v), pad - 4, Y(v)); }
+      if (ghost) { g.strokeStyle = "#b14cff"; g.setLineDash([5, 4]); g.beginPath(); g.moveTo(pad, Y(ghost.lap_time)); g.lineTo(w, Y(ghost.lap_time)); g.stroke(); g.setLineDash([]); g.fillStyle = "#b14cff"; g.textAlign = "left"; g.fillText("PB ghost " + fmt(ghost.lap_time), pad + 4, Y(ghost.lap_time) - 8); }
+      g.strokeStyle = "#c9ccd1"; g.beginPath(); laps.forEach((l, i) => i ? g.lineTo(X(i), Y(l.lap_time)) : g.moveTo(X(i), Y(l.lap_time))); g.stroke();
+      const best = Math.min(...laps.map((l) => l.lap_time));
+      laps.forEach((l, i) => {
+        g.fillStyle = l.lap_time === best ? "#b14cff" : l.valid ? "#20d47a" : "#ff5a4f";
+        g.beginPath(); g.arc(X(i), Y(l.lap_time), l.id === A.id || (B && l.id === B.id) ? 6 : 4, 0, 7); g.fill();
+        g.fillStyle = "#858c99"; g.textAlign = "center"; g.fillText("L" + l.lap + (l.valid ? "" : "✗"), X(i), h - 10);
+      });
+    } else g.fillText("no laps", 10, 20);
+  }
+  // per-corner comparisons
+  const names = SEG.map((s) => s.name), sa = SEG.map((s) => cornerStats(A, s)), sb = B ? SEG.map((s) => cornerStats(B, s)) : null;
+  if (B) {
+    $("cdl-sub").innerHTML = '<span class="cA">◀ A faster</span> · <span class="cB">B faster ▶</span>';
+    hbars("c-cdelta", names, [{ values: sa.map((a, i) => sb[i].time - a.time), color: (v) => v > 0 ? COL.A : COL.B }], { signed: true, fmt: (v) => sgn(v) });
+  } else if (A.report) {
+    $("cdl-sub").textContent = `vs ${A.report.ref_label} · + = time lost`;
+    const rc = new Map(A.report.corners.map((c) => [c.corner, c.time_loss]));
+    const seen = {}, lossFor = (s) => { const base = s.name.replace(/ \d+$/, ""); seen[base] = (seen[base] || 0) + 1; return A.report.corners.filter((c) => c.corner === base)[seen[base] - 1]?.time_loss ?? rc.get(base) ?? null; };
+    hbars("c-cdelta", names, [{ values: SEG.map(lossFor), color: (v) => v > 0 ? "#ff5a4f" : "#20d47a" }], { signed: true, fmt: (v) => sgn(v) });
+  } else { $("cdl-sub").textContent = "segment times"; hbars("c-cdelta", names, [{ values: sa.map((a) => a.time), color: "#5a6170" }], { fmt: (v) => v.toFixed(2) + "s" }); }
+  const two = (f) => [{ values: sa.map(f), color: COL.A }, ...(B ? [{ values: sb.map(f), color: COL.B }] : [])];
+  hbars("c-apex", names, two((s) => s.vmin), { labelAll: true });
+  hbars("c-brake", names, two((s) => s.brake), { labelAll: true });
+  // distributions
+  const dist = (lap, fn, bins) => { const n = new Array(bins).fill(0), t = lap.trace; for (let i = 1; i < t.dist.length; i++) { const b = fn(t, i); if (b >= 0 && b < bins) n[b] += t.t[i] - t.t[i - 1]; } const tot = n.reduce((a, b) => a + b, 0) || 1; return n.map((v) => v / tot * 100); };
+  const distD = (lap, fn, bins) => { const n = new Array(bins).fill(0), t = lap.trace; for (let i = 0; i < t.dist.length; i++) { const b = fn(t, i); if (b >= 0 && b < bins) n[b]++; } return n.map((v) => v / t.dist.length * 100); };
+  const gearF = (t, i) => Math.round(t.gear[i]) - 1;
+  vbars("c-gears", ["1", "2", "3", "4", "5", "6", "7", "8"], [{ values: distD(A, gearF, 8), color: COL.A }, ...(B ? [{ values: distD(B, gearF, 8), color: COL.B }] : [])], { unit: "%" });
+  const spF = (t, i) => Math.floor(t.speed[i] / 20), spL = Array.from({ length: 18 }, (_, k) => (k % 3 ? "" : k * 20));
+  vbars("c-speedhist", spL, [{ values: dist(A, spF, 18), color: COL.A }, ...(B ? [{ values: dist(B, spF, 18), color: COL.B }] : [])], { unit: "%" });
+  const phF = (t, i) => t.brake[i] > 0.05 ? 0 : t.throttle[i] > 0.98 ? 3 : t.throttle[i] > 0.05 ? 2 : 1;
+  vbars("c-phases", ["braking", "coasting", "partial", "full throttle"], [{ values: dist(A, phF, 4), color: COL.A }, ...(B ? [{ values: dist(B, phF, 4), color: COL.B }] : [])], { unit: "%" });
+  drawSectors(laps);
+}
+function drawSectors(laps) {
+  const withS = laps.filter((l) => l.sectors);
+  if (!withS.length) { $("sectors").innerHTML = '<span class="muted">No sector times for this session (recorded before sector logging, or ghost laps).</span>'; return; }
+  const best = [0, 1, 2].map((k) => Math.min(...withS.map((l) => l.sectors[k]))), SC = sectorColours();
+  const ideal = best.reduce((a, b) => a + b, 0) / 1000;
+  $("sectors").innerHTML = `<table class="sectab"><thead><tr><th>Lap</th><th>S1</th><th>S2</th><th>S3</th><th>Time</th></tr></thead><tbody>` +
+    withS.map((l) => `<tr${l.id === A.id ? ' style="background:rgba(0,210,255,.08)"' : ""}><td>L${l.lap}${l.valid ? "" : " ✗"}</td>${l.sectors.map((v, k) => `<td class="${SC.get(l.id)?.[k] || ""}">${(v / 1000).toFixed(3)}</td>`).join("")}<td>${fmt(l.lap_time)}</td></tr>`).join("") +
+    `<tr><td class="muted">Ideal</td>${best.map((v) => `<td class="p">${(v / 1000).toFixed(3)}</td>`).join("")}<td class="p">${fmt(ideal)}</td></tr></tbody></table>` +
+    `<div class="muted" style="margin-top:6px">Ideal lap = your best three sectors combined: ${fmt(ideal)} (${sgn(ideal - Math.min(...withS.map((l) => l.lap_time)))} vs your best lap).</div>`;
 }
 
 // ================================================================ boot

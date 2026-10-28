@@ -29,6 +29,7 @@
   <section id="tab-review" class="review hidden">
     <aside class="sidebar">
       <div class="side-head">Laps <span class="muted">last 2 sessions</span></div>
+      <div id="importing" class="importing hidden"></div>
       <div class="hint">Click a lap = <span class="cA">A</span> · Shift-click or the B button = <span class="cB">B</span></div>
       <div id="lapgroups"></div>
     </aside>
@@ -60,7 +61,8 @@
           <div class="charts" id="charts"></div>
           <div class="rightcol">
             <div class="panel">
-              <div class="ph">Track map <span class="muted" id="maplegend"></span></div>
+              <div class="ph">Track map <span class="seg" id="mapmode"><button data-m="speed" class="on">Speed</button><button data-m="gear">Gear</button><button data-m="pedals">Pedals</button><button data-m="delta">Δ</button></span></div>
+              <div class="muted maplegend" id="maplegend"></div>
               <canvas id="map"></canvas>
               <div class="readout" id="readout"></div>
             </div>
@@ -68,11 +70,27 @@
               <div class="ph">Corners <span class="muted">click to zoom</span></div>
               <div class="tablewrap"><table class="corners" id="corners"></table></div>
             </div>
+            <div class="panel">
+              <div class="ph">G-G diagram <span class="muted">grip used: lateral vs braking/acceleration</span></div>
+              <canvas id="gg" class="sq"></canvas>
+            </div>
             <div class="panel" id="reportpanel">
               <div class="ph">Engineer's notes <span class="muted">lap A vs reference</span></div>
               <div id="notes" class="notes"></div>
             </div>
           </div>
+        </div>
+
+        <div class="sectionhead">Analysis</div>
+        <div class="analysis">
+          <div class="panel"><div class="ph">Lap times <span class="muted">this session · purple = fastest</span></div><canvas id="c-laps" data-h="200"></canvas></div>
+          <div class="panel"><div class="ph">Time by corner <span class="muted" id="cdl-sub"></span></div><canvas id="c-cdelta" data-h="260"></canvas></div>
+          <div class="panel"><div class="ph">Minimum (apex) speed <span class="muted">km/h</span></div><canvas id="c-apex" data-h="260"></canvas></div>
+          <div class="panel"><div class="ph">Braking point <span class="muted">metres before apex</span></div><canvas id="c-brake" data-h="260"></canvas></div>
+          <div class="panel"><div class="ph">Gear usage <span class="muted">% of lap distance</span></div><canvas id="c-gears" data-h="200"></canvas></div>
+          <div class="panel"><div class="ph">Speed distribution <span class="muted">% of lap time per 20 km/h band</span></div><canvas id="c-speedhist" data-h="200"></canvas></div>
+          <div class="panel"><div class="ph">Pedal phases <span class="muted">% of lap time</span></div><canvas id="c-phases" data-h="200"></canvas></div>
+          <div class="panel"><div class="ph">Sectors <span class="muted">purple = session best</span></div><div id="sectors" class="tablewrap"></div></div>
         </div>
       </div>
     </div>

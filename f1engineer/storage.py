@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS laps(id INTEGER PRIMARY KEY AUTOINCREMENT, session_ui
   lap_num INTEGER, lap_time REAL, valid INTEGER, input_device TEXT, assists TEXT, report TEXT, trace TEXT, created REAL);
 CREATE TABLE IF NOT EXISTS radio(id INTEGER PRIMARY KEY AUTOINCREMENT, session_uid TEXT, t REAL, role TEXT, text TEXT);
 CREATE INDEX IF NOT EXISTS laps_session ON laps(session_uid);
+CREATE TABLE IF NOT EXISTS imports(path TEXT PRIMARY KEY, mtime REAL);
 """
 
 
@@ -39,6 +40,9 @@ class Storage:
         (self.root / "reference").mkdir(exist_ok=True)
         self.db = sqlite3.connect(self.root / "f1engineer.db", check_same_thread=False)
         self.db.executescript(SCHEMA)
+        if "sectors" not in [r[1] for r in self.db.execute("PRAGMA table_info(laps)")]:
+            self.db.execute("ALTER TABLE laps ADD COLUMN sectors TEXT")  # added after the first release
+        self.session_clock: float | None = None  # importer: date sessions by the recording, not by now
         self.lock = threading.Lock()
 
     def can_write(self) -> bool:
@@ -50,7 +54,8 @@ class Storage:
     # --- sessions ---------------------------------------------------------
     def start_session(self, uid: int, track: str, stype: str, fmt: int) -> None:
         with self.lock:
-            self.db.execute("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?)", (str(uid), track, stype, time.time(), fmt))
+            self.db.execute("INSERT OR IGNORE INTO sessions VALUES(?,?,?,?,?)",
+                            (str(uid), track, stype, self.session_clock or time.time(), fmt))
             self.db.commit()
         self.retention()
 
@@ -60,7 +65,7 @@ class Storage:
             rows = self.db.execute(
                 "SELECT s.uid FROM sessions s WHERE EXISTS(SELECT 1 FROM laps l WHERE l.session_uid=s.uid) "
                 "ORDER BY s.started DESC").fetchall()
-            empty = self.db.execute(
+            empty = [] if self.session_clock else self.db.execute(  # an import is still filling its (back-dated) session
                 "SELECT uid FROM sessions s WHERE NOT EXISTS(SELECT 1 FROM laps l WHERE l.session_uid=s.uid) "
                 "AND started < ?", (time.time() - 3600,)).fetchall()
             old = [r[0] for r in rows[self.cfg.keep_sessions:]] + [r[0] for r in empty]
@@ -85,11 +90,12 @@ class Storage:
         np.savez_compressed(trace, **lap.arrays)
         with self.lock:
             cur = self.db.execute(
-                "INSERT INTO laps(session_uid,car_idx,car_name,lap_num,lap_time,valid,input_device,assists,report,trace,created)"
-                " VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO laps(session_uid,car_idx,car_name,lap_num,lap_time,valid,input_device,assists,report,trace,created,"
+                "sectors) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                 (str(uid), lap.car_idx, car_name, lap.lap_num, lap.lap_time, int(not lap.invalid), input_device,
                  json.dumps(lap.assists), json.dumps(report, default=str) if report else None,
-                 str(trace.relative_to(self.root)), time.time()))
+                 str(trace.relative_to(self.root)), self.session_clock or time.time(),
+                 json.dumps([int(x) for x in lap.sector_ms]) if any(lap.sector_ms) else None))
             self.db.commit()
             return cur.lastrowid
 
@@ -102,9 +108,24 @@ class Storage:
         with self.lock:
             rows = self.db.execute(
                 "SELECT l.id,l.session_uid,s.track,s.type,l.car_idx,l.car_name,l.lap_num,l.lap_time,l.valid,l.input_device,"
-                "l.assists,l.created FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid ORDER BY l.id DESC LIMIT 300").fetchall()
-        keys = ("id", "session", "track", "type", "car_idx", "car", "lap", "lap_time", "valid", "input", "assists", "created")
-        return [dict(zip(keys, r)) for r in rows]
+                "l.assists,l.created,l.sectors FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid "
+                "ORDER BY s.started DESC, l.id DESC LIMIT 300").fetchall()
+        keys = ("id", "session", "track", "type", "car_idx", "car", "lap", "lap_time", "valid", "input", "assists", "created",
+                "sectors")
+        out = [dict(zip(keys, r)) for r in rows]
+        for d in out:
+            d["sectors"] = json.loads(d["sectors"]) if d["sectors"] else None
+        return out
+
+    def was_imported(self, path: Path) -> bool:
+        with self.lock:
+            r = self.db.execute("SELECT mtime FROM imports WHERE path=?", (str(path.resolve()),)).fetchone()
+        return bool(r) and abs(r[0] - path.stat().st_mtime) < 1
+
+    def mark_imported(self, path: Path) -> None:
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO imports VALUES(?,?)", (str(path.resolve()), path.stat().st_mtime))
+            self.db.commit()
 
     def lap_detail(self, lap_id: int) -> dict | None:
         with self.lock:

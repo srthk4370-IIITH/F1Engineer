@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import random
 import socket
 import threading
 import time
@@ -267,9 +268,16 @@ class Engine:
         self._emit({"type": "radio", "role": "driver", "text": question})
         self._bg_put(self.store.log_radio, self.tr.session_uid, "driver", question)
         out = []
-        for s in self.agent.ask(question):
-            out.append(s)
-            self._say(s, 1)
+        # a real engineer acknowledges at once; the answer follows when the model has it
+        ack = threading.Timer(1.0, lambda: None if out else self.speech.say(
+            random.choice(["Copy, checking.", "Copy. Stand by.", "Understood, one sec."]), 1))
+        ack.start()
+        try:
+            for s in self.agent.ask(question):
+                out.append(s)
+                self._say(s, 1)
+        finally:
+            ack.cancel()
         return " ".join(out)
 
     def ctx(self) -> dict:

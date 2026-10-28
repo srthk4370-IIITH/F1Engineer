@@ -152,3 +152,36 @@ def test_garage_debrief_waits_until_parked():
     assert not said
     s.tick({"paused": True})
     assert said
+
+
+@pytest.mark.skipif(not REAL.exists(), reason="real capture not present")
+def test_live_coaching_on_real_capture():
+    """Proactive calls on the real session: first-lap self review, in-lap corner calls, no absurd deltas."""
+    import re
+    from f1engineer import radio
+    from f1engineer.config import Config
+    from f1engineer.engine import Engine
+    from f1engineer.storage import Storage
+    from f1engineer.telemetry.capture import read_capture
+    cfg = Config()
+    cfg.data_dir = Path(tempfile.mkdtemp())
+    e = Engine(cfg, storage=Storage(cfg))
+    said = []
+    e.speech.say = lambda text, prio=5: said.append(text)
+    clock = [0.0]
+    old, radio.CLOCK = radio.CLOCK, lambda: clock[0]
+    try:
+        for n, (t, d) in enumerate(read_capture(REAL)):
+            clock[0] = t
+            e.feed(d, wall=t)
+            if n % 24 == 0:
+                e.sched.tick(e.ctx())
+                e.coach.tick()
+    finally:
+        radio.CLOCK = old
+    text = " | ".join(said)
+    assert "No reference yet" in text                      # lap 1 gets a debrief, not just "banker"
+    assert "Next lap, focus on" in text
+    assert re.search(r"Sector (one|two)", text)
+    assert "Lap 1:29.098" in text and "Lap 1:34.598" in text  # lap summaries are not crowded out
+    assert not re.search(r"\b\d{2,}\.\d seconds", text)     # no nonsense deltas around the line

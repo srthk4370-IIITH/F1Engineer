@@ -119,9 +119,13 @@ def cmd_dashboard(a) -> None:
     import uvicorn
     from f1engineer.storage import Storage
     from f1engineer.web.app import ReviewOnly, create_app
-    server = uvicorn.Server(uvicorn.Config(create_app(ReviewOnly(Storage(cfg))), host="127.0.0.1", port=cfg.web_port,
-                                           log_level="warning"))
+    from f1engineer.importer import auto_import
+    store = Storage(cfg)
+    review = ReviewOnly(store)
+    server = uvicorn.Server(uvicorn.Config(create_app(review), host="127.0.0.1", port=cfg.web_port, log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
+    # newest recordings appear by themselves (in the background: the page opens immediately)
+    threading.Thread(target=auto_import, args=(cfg, store), kwargs={"status": review.status}, daemon=True).start()
     print(f"[dashboard] {url}  (Ctrl+C to stop; closes itself when the game starts the live engineer)")
     if not a.no_browser:
         threading.Timer(1.0, lambda: webbrowser.open(url)).start()
@@ -140,21 +144,17 @@ def cmd_import(a) -> None:
     """Analyse a recorded .f1cap session into the lap database (so the dashboard can show it)."""
     from pathlib import Path
     from f1engineer.config import Config
-    from f1engineer.engine import Engine
-    from f1engineer.llm.agent import MockProvider
+    from f1engineer.importer import auto_import, import_capture
     from f1engineer.storage import Storage
-    from f1engineer.telemetry.capture import read_capture
     cfg = Config()
     cfg.speech = False
     store = Storage(cfg)
-    before = len(store.list_laps())
-    eng = Engine(cfg, storage=store, provider=MockProvider())
-    for cap in a.captures or [str(p) for p in sorted((cfg.data_dir / "captures").glob("*.f1cap"))[:1]]:
-        print(f"[import] {cap}")
-        for _, d in read_capture(Path(cap)):
-            eng.feed(d)
-        eng.drain()
-    print(f"[import] {len(store.list_laps()) - before} laps added. Open: uv run f1engineer dashboard")
+    if a.captures:
+        for cap in a.captures:
+            import_capture(cfg, store, Path(cap))
+    else:
+        auto_import(cfg, store)
+    print("[import] done. Open: uv run f1engineer dashboard")
 
 
 def cmd_watch(a) -> None:
@@ -234,7 +234,7 @@ def main(argv=None) -> None:
     d.add_argument("--no-browser", action="store_true")
     d.set_defaults(fn=cmd_dashboard)
     i = sub.add_parser("import")
-    i.add_argument("captures", nargs="*", help=".f1cap files (default: the first one in data/captures)")
+    i.add_argument("captures", nargs="*", help=".f1cap files (default: the 2 newest in data/captures)")
     i.set_defaults(fn=cmd_import)
     sub.add_parser("record").set_defaults(fn=cmd_record)
     sub.add_parser("setup").set_defaults(fn=cmd_setup)

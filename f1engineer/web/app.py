@@ -28,9 +28,10 @@ class ReviewOnly:
         self.store = store
         self.ref = None
         self.listeners: list = []
+        self.status: dict = {"importing": None}
 
     def live_state(self) -> dict:
-        return {"connected": False, "offline": True}
+        return {"connected": False, "offline": True, "importing": self.status.get("importing")}
 
     def ask(self, q: str) -> str:
         return "I'm off the pit wall. Start the game and I'll talk."

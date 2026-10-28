@@ -152,3 +152,13 @@ See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, 
 - `f1engineer import [caps]`: replays a capture through Engine (MockProvider) into the DB.
 - New UI (static/index.html, style.css, app.js): Telemetry tab with session lap list (purple = session fastest, PB ghosts), A/B compare, stats, mini-sectors (split halfway between apexes), synced uPlot charts (delta, speed+corner labels, throttle, brake, gear stepped, RPM, steer, lat G, front slip) with synced zoom, track map coloured by speed or by who is faster + scrub cursor, corner table (apex speed, brake point, gear, throttle-on), engineer notes from the stored report.
 - /api/lap now returns track, valid, input, assists, detected corners, track_length, rpm/drs/glat/glon/slip_f/slip_r.
+
+### 2026-10-28 (afternoon) — user feedback round 2
+- Bug: watcher started 11:27 with stale env (OPENAI_MODEL=Yes, PTT t) and its child engine inherited it (load_dotenv doesn't override). Fix: `load_dotenv(override=True)` — .env always wins.
+- Bug: no transcripts ever reached the engine; STT errors in the PTT thread were silent (likely CUDA failing while the game holds VRAM). Fix: transcribe_safe (GPU error -> CPU retry), every PTT logged (duration, dBFS level, text), radio beeps on PTT down/up, mic device logged.
+- LLM failures fall back to the offline brain for that answer (logged). Instant "Copy, checking." if no sentence within 1 s.
+- coaching.py LiveCoach (10 Hz): corner-exit calls (lock-up/off/loss>0.25 s with cause/gain), lap invalid, lap gone (>2 s), sector deltas, "bring it home", out/in lap. Races: only lock-ups/offs. Uses lapmath.corner_metrics on the partial lap padded with the reference (bug found: evaluate >=10 m past corner end, else last grid point is reference data).
+- First lap: coach.self_review (no reference needed) + radio.self_review_messages; TT first lap re-analysed vs ghost if the ghost lap lands within 30 s. After each lap: "Next lap, focus on X: <tip>" + one-time setup idea.
+- Tools get_car_status / get_rivals; live snapshot in the system context (tyres, temps, position, delta, nearby cars, last losses).
+- Dashboard: auto-import newest 2 recordings on open (imports table, sessions dated by file mtime), sector times stored per lap (sectors column), timing-tower lap list with purple/green/yellow sectors, map modes speed/gear/pedals/delta, G-G diagram, long-G + DRS traces, analysis panels (lap times, time by corner, apex speed, braking points, gear usage, speed distribution, pedal phases, sectors + ideal lap).
+- gpt-5.4-mini real latency ~2.8 s to first sentence (model TTFT + tool round trip).
