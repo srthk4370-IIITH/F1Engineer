@@ -35,7 +35,7 @@ def test_speech_number_formatting():
 
 def test_scheduler_waits_for_straight():
     said = []
-    s = radio.RadioScheduler(lambda t, p: said.append(t))
+    s = radio.RadioScheduler(lambda t, p, m=None: said.append(t))
     s.push([radio.Message(1, radio.CLOCK(), "Lap one twenty nine, two tenths down on your best.", "straight", 60, "k")])
     s.tick({"throttle": 1.0, "steer": 0.0, "brake": 0.0, "time_to_brake": 1.0})  # too short
     assert not said
@@ -147,7 +147,7 @@ def test_real_capture_end_to_end():
 
 def test_garage_debrief_waits_until_parked():
     said = []
-    s = radio.RadioScheduler(lambda t, p: said.append(t))
+    s = radio.RadioScheduler(lambda t, p, m=None: said.append(t))
     s.push([radio.Message(6, radio.CLOCK(), "Long debrief " * 40, "garage", 900, "g")])
     s.tick({"throttle": 1.0, "steer": 0.0, "brake": 0.0, "time_to_brake": 30.0})
     assert not said
@@ -168,7 +168,7 @@ def test_live_coaching_on_real_capture():
     cfg.data_dir = Path(tempfile.mkdtemp())
     e = Engine(cfg, storage=Storage(cfg))
     said = []
-    e.speech.say = lambda text, prio=5: said.append(text)
+    e.speech.say = lambda text, *a, **k: said.append(text)
     clock = [0.0]
     old, radio.CLOCK = radio.CLOCK, lambda: clock[0]
     try:
@@ -294,7 +294,7 @@ def test_pipeline_answers_in_order_and_dedupes():
     cfg.data_dir = Path(tempfile.mkdtemp())
     e = Engine(cfg, storage=Storage(cfg))
     said = []
-    e.speech.say = lambda text, prio=5: said.append(text)
+    e.speech.say = lambda text, *a, **k: said.append(text)
 
     class SlowFirst:   # the first question is the slowest to answer
         def stream(self, messages, tools, **_):
@@ -309,8 +309,8 @@ def test_pipeline_answers_in_order_and_dedupes():
         _t.sleep(0.02)
     for x in th:
         x.join(10)
-    answers = [s for s in said if s.startswith("Answer")]
-    assert answers == ["Answer to one.", "Answer to two.", "Answer to three."]
+    answers = [s for s in said if "nswer to" in s]      # later ones may open with context ("On what you asked: ...")
+    assert [a.split("nswer to ")[1] for a in answers] == ["one.", "two.", "three."]
 
 
 def test_quick_answers_route_data_questions_without_ai():
@@ -374,3 +374,56 @@ def test_every_module_imports():
         if m.name.endswith("__main__"):
             continue
         importlib.import_module(m.name)
+
+
+def test_floor_driver_cuts_in_and_nothing_is_lost():
+    import threading
+    import time as _t
+    from f1engineer.floor import Floor
+    f = Floor()
+    f.put("Box this lap.", "urgent")
+    f.put("Turn four cost you a tenth. Brake later there.", "proactive", "p1")
+    first = f.next()
+    assert first.text == "Box this lap."
+    f.done(first)
+    cur = f.next()                                   # "Turn four cost you a tenth." starts playing
+    f.put("Checking.", "ack")
+    cut = f.set_driver(True)                         # driver presses Shift mid-sentence
+    assert cut is cur and not f.done(cur)            # reported as cut off
+    got = []
+    threading.Thread(target=lambda: got.append(f.next()), daemon=True).start()
+    _t.sleep(0.4)
+    assert not got                                   # nothing plays while the driver has the floor
+    f.set_driver(False)
+    _t.sleep(0.8)
+    assert got and got[0].text == "Checking."        # ack first after the driver
+    f.done(got[0])
+    resumed = f.next()
+    assert resumed.text == "Turn four cost you a tenth." and resumed.resumed   # picked back up, not thrown away
+    f.done(resumed)
+    assert f.next().text == "Brake later there."
+
+
+def test_preferences_latest_wins_and_soft_filter(tmp_path):
+    from f1engineer import brain, radio
+    p = brain.DriverProfile(tmp_path / "p.json")
+    p.set_preference("coasting", "don't let me coast")
+    r = p.set_preference("coasting", "coasting is fine on keyboard")
+    assert r["previous"] == "don't let me coast" and p.data["preferences"]["coasting"]["history"]
+    assert "coasting is fine" in brain.DriverProfile(tmp_path / "p.json").summary()
+    assert p.preference_for("Saw coasting into Brooklands.")[0] == "coasting"
+    from types import SimpleNamespace as NS
+    from f1engineer.engine import Engine
+    eng = NS(profile=p, pipeline=NS(waiting_long=lambda: False))
+    weak = radio.Message(3, 0, "Saw coasting into Brooklands.", evidence=0.05)
+    strong = radio.Message(3, 0, "Village, three tenths: coasted 40 m.", evidence=0.3)
+    assert Engine._radio_filter(eng, weak) is None                       # their call, small stakes: stay quiet
+    assert "village" in Engine._radio_filter(eng, strong).lower()       # costs real time: still said, framed
+
+
+def test_quick_commands_are_instant():
+    from f1engineer import quick
+    assert quick.classify("say again") == "repeat" and quick.classify("Stop") == "stop"
+    assert quick.classify("go quiet for a bit") == "quiet" and quick.classify("radio on") == "radio_on"
+    assert quick.instant("tyre temps?") and not quick.instant("why am I slow in turn 4?")
+    assert quick.lead_in("what setup changes should I make").lower().count("setup") == 1

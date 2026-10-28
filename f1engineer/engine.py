@@ -29,8 +29,13 @@ from f1engineer.telemetry import formats, packets_2020 as P
 class NullSpeech:
     """Prints instead of speaking (no audio stack / tests)."""
 
-    def say(self, text: str, priority: int = 5) -> None:
+    def say(self, text: str, priority: int = 5, kind: str | None = None, key: str = "", ttl: float | None = None) -> None:
         print(f"[radio] {text}")
+
+    def hush(self) -> None:
+        pass
+
+    driver_talking = False
 
     def ptt(self, down: bool) -> None:
         pass
@@ -48,7 +53,9 @@ class Engine:
         self.tr = SessionTracker()
         self.gaps = strategy.GapTimer()
         self.tyres = strategy.TyreModel()
-        self.sched = radio.RadioScheduler(self._say)
+        self.sched = radio.RadioScheduler(self._say_sched)
+        self.sched.filter = self._radio_filter
+        self.quiet_until = 0.0
         self.agent = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=provider,
                            profile_fn=self.profile.summary)
         self.reports: list[coach.LapReport] = []
@@ -317,7 +324,8 @@ class Engine:
                 f"(Your own analysis, delivered now in a quiet moment: slow lap, pit lane or garage.) Analyse lap "
                 f"{lap_num} and the session so far: dig through the lap report, corner history, consistency, driving "
                 "style and progress first. Then tell the driver what happened, why, the one or two things to change and "
-                "exactly how, and a setup change with a value if the data supports it.", mode="analysis", remember=False))
+                "exactly how, and a setup change with a value if the data supports it.", mode="analysis", remember=False,
+                max_rounds=6))
         except Exception as e:
             print(f"[engine] AI debrief failed: {e!r}")
         if text:
@@ -355,11 +363,35 @@ class Engine:
         # the call itself (box or stay out) comes from the race engineer, which knows tyres and laps left
 
     # ---- radio / PTT ---------------------------------------------------------------
-    def _say(self, text: str, priority: int = 5) -> None:
-        self._recent_radio.append(text)
-        self.speech.say(text, priority)
+    def _say(self, text: str, priority: int = 5, kind: str | None = None, key: str = "", ttl: float | None = None) -> None:
+        if kind != "ack":
+            self._recent_radio.append(text)
+        self.speech.say(text, priority, kind, key, ttl)
         self._emit({"type": "radio", "role": "engineer", "text": text})
         self._bg_put(self.store.log_radio, self.tr.session_uid, "engineer", text)
+
+    def _say_sched(self, text: str, priority: int, m=None) -> None:
+        kind = "urgent" if m and m.kind == "urgent" else "analysis" if m and m.kind == "garage" else "proactive"
+        self._say(text, priority, kind, m.key if m else "")
+
+    def _radio_filter(self, m) -> str | None:
+        """Last look before a proactive call goes out: the driver's preferences, and the conversation in flight."""
+        text = m.text
+        if m.kind != "urgent":
+            hit = self.profile.preference_for(text)
+            if hit:
+                if m.evidence < 0.25:
+                    return None          # their call, and this isn't costing enough to argue
+                lower = text[:1].lower() + text[1:]
+                text = random.choice([f"I know you've got your own way on {hit[0].replace('_', ' ')}, but {lower}",
+                                      f"Your call on {hit[0].replace('_', ' ')}, but for the record: {lower}"])
+            if self.pipeline.waiting_long():
+                text = "Still on what you asked. Meanwhile, " + text[:1].lower() + text[1:]
+                self.pipeline.note_interleaved()
+        return text
+
+    def last_message(self) -> str | None:
+        return next((t for t in reversed(self._recent_radio)), None)
 
     def _buttons(self, b: int) -> None:
         if not self._ptt_mask:
@@ -391,7 +423,7 @@ class Engine:
 
     # ---- the engineer's own initiative (agentic: it investigates with tools before deciding to speak) -------
     def _strategist(self, trigger: str, replace_key: str = "ai_call") -> None:
-        if isinstance(self.agent.provider, MockProvider) or self.pipeline.busy:
+        if isinstance(self.agent.provider, MockProvider) or self.pipeline.speaking or time.time() < self.quiet_until:
             return
         now = time.time()
         if now - self._last_strategist < 40:
@@ -404,11 +436,18 @@ class Engine:
                           profile_fn=self.profile.summary)
                 said = " | ".join(list(self._recent_radio)[-8:]) or "nothing yet"
                 text = " ".join(a.ask(
-                    f"(Pit wall, not a driver question.) Trigger: {trigger}. Decide whether the driver needs to hear "
-                    "something right now that the radio hasn't already covered: strategy (pit now? stay out?), tyres "
-                    "(wear, overheating, cold), fuel, threats or chances from cars around, weather, or the one driving "
-                    "fix that matters most. Check the data with tools first. Already said on the radio recently: "
-                    f"{said}. If nothing important, answer exactly SILENT.", mode="strategist", remember=False)).strip()
+                    f"(Pit wall brief, not a driver question.) Trigger: {trigger}.\n"
+                    "Your job: decide whether the driver needs a call RIGHT NOW that the radio hasn't already made.\n"
+                    "Look at, in order: strategy (pit now / stay out / pit window), tyres (wear, overheating, cold), "
+                    "fuel, the cars around (threats and chances), weather, then the single driving fix worth the most "
+                    "time. Data you can pull: get_race_status, get_car_status, get_rivals, get_race_history, "
+                    "evaluate_strategy, get_last_lap_report, get_corner_history (per-lap brake point, apex and exit "
+                    "speed, throttle-on, gear vs the reference), get_consistency, get_driving_style, get_progress. "
+                    "If you're not sure, fetch more data - call as many tools as you need, several rounds - before "
+                    "you decide. Never guess.\n"
+                    f"Already said on the radio recently: {said}.\n"
+                    "Answer with exactly SILENT, or one radio call of at most two sentences: the number, then the "
+                    "concrete action.", mode="strategist", remember=False, max_rounds=6)).strip()
                 print(f"[strategist] {trigger}: {text[:160]}")
                 if text and "SILENT" not in text.upper()[:20]:
                     self.sched.push([radio.Message(3, radio.CLOCK(), text, "straight", 45, replace_key)])
@@ -456,7 +495,8 @@ class Engine:
         if not self.tr.session:
             return
         c = {"paused": True} if quiet else self.ctx()
-        c["talking"] = self.pipeline.busy
+        c["talking"] = self.pipeline.speaking or self.pipeline.waiting_short() or bool(getattr(self.speech, "driver_talking", False))
+        c["quiet"] = time.time() < self.quiet_until
         parked = bool(c.get("paused") or c.get("in_garage") or c.get("cooldown"))
         if parked and self._debrief_pending and not self.pipeline.busy:
             lap_num, self._debrief_pending = self._debrief_pending, None
@@ -653,7 +693,10 @@ class Engine:
             for r in self.reports[-8:]:
                 for c in r.corners:
                     if corner.lower() in c["corner"].lower():
-                        out.append({"lap": r.lap_num, **{k: c[k] for k in ("time_loss", "min_speed", "brake_point_m", "causes")}})
+                        out.append({"lap": r.lap_num, **{k: c.get(k) for k in (
+                            "time_loss", "entry_loss", "exit_loss", "min_speed", "ref_min_speed", "brake_point_m",
+                            "ref_brake_point_m", "throttle_on_m", "ref_throttle_on_m", "exit_speed", "ref_exit_speed",
+                            "lockup", "wheelspin", "off_track", "causes")}})
             return {"corner": corner, "laps": out} if out else {"error": f"no corner matching {corner}"}
 
         return {

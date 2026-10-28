@@ -79,6 +79,9 @@ class VoiceGate:
         self.quiet = 0.0
         self.active = False
 
+    def reset(self) -> None:
+        self.active, self.buf, self.pre, self.quiet = False, [], [], 0.0
+
     def arm(self) -> None:
         """Start a segment now, without waiting for the level (used right after "Go ahead")."""
         self.active, self.buf, self.quiet = True, list(self.pre), 0.0

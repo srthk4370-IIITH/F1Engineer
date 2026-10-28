@@ -47,6 +47,7 @@ function showTab(t) {
   if (t === "telemetry") requestAnimationFrame(resizeAll);
   if (t === "timing") drawTiming();
   if (t === "race") drawRace();
+  if (t === "engineer") loadMemory();
 }
 document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => { history.replaceState(null, "", "#" + b.dataset.tab + (b.dataset.tab === "telemetry" && SEL.length ? "?laps=" + SEL.map((s) => s.id).join(",") : "")); showTab(b.dataset.tab); });
 
@@ -124,6 +125,16 @@ $("chatform").onsubmit = async (e) => {
     if (OFFLINE) addRadio({ role: "engineer", text: r.answer });
   } catch (err) { addRadio({ role: "engineer", text: "Radio's down: " + err }); } finally { th.remove(); }
 };
+
+// ---------------------------------------------------------------- memory
+async function loadMemory() {
+  let m = {}; try { m = await (await fetch("/api/memory")).json(); } catch { return; }
+  const prefs = Object.entries(m.preferences || {}), notes = m.notes || [];
+  $("memory").innerHTML = (prefs.length || notes.length ? "" : '<div class="sub">Nothing yet. Tell him things like "coasting is fine for me on keyboard" or "my goal is a 1:27 at Silverstone".</div>') +
+    prefs.map(([t, p]) => `<div class="mem"><span class="tag">${esc(t.replace("_", " "))}</span><div><b>${esc(p.text)}</b><small>since ${esc(p.since)}${p.history && p.history.length ? ` · replaced "${esc(p.history[p.history.length - 1].text)}"` : ""}</small></div><button class="btn" data-forget="${esc(t)}">Forget</button></div>`).join("") +
+    notes.slice().reverse().map((n) => `<div class="mem"><span class="tag note">note</span><div><b>${esc(n.note)}</b><small>${esc(n.date)}</small></div><button class="btn" data-forget="${esc(n.note)}">Forget</button></div>`).join("");
+  document.querySelectorAll("[data-forget]").forEach((b) => b.onclick = async () => { await fetch("/api/memory?what=" + encodeURIComponent(b.dataset.forget), { method: "DELETE" }); loadMemory(); });
+}
 
 // ---------------------------------------------------------------- laps & sessions
 let LAPS = [], SESSIONS = [], cache = new Map();

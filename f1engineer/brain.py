@@ -245,8 +245,22 @@ def evaluate_strategy(plan: list[dict] | None, total_laps: int, current_lap: int
 
 
 # ---- memory --------------------------------------------------------------------------------------
+PREF_TOPICS = {   # topic -> words that mark a radio call as being about it
+    "coasting": ["coast"], "braking": ["brake later", "brake earlier", "braked", "braking point"],
+    "lockups": ["lock"], "track_limits": ["track limits", "deleted", "wide at", "off at", "inside the lines"],
+    "throttle": ["throttle", "on the power"], "steering": ["steering", "less steering"], "trail_braking": ["trail"],
+    "kerbs": ["kerb"], "setup": ["setup", "wing", "anti-roll", "diff"], "tyres": ["tyre"], "fuel": ["fuel", "lift and coast"],
+    "talking": [], "other": [],
+}
+
+
 class DriverProfile:
-    """Facts the driver asked the engineer to remember (goals, preferences). data/driver_profile.json"""
+    """What the driver told the engineer (data/driver_profile.json).
+
+    notes: goals and facts. preferences: one per topic, the latest statement wins and the old one moves to history -
+    so "don't coast" followed later by "coasting is fine" is an update, not a contradiction. Preferences are soft:
+    the engineer follows them, but says so once when the data clearly disagrees.
+    """
 
     def __init__(self, path: Path):
         self.path = path
@@ -254,18 +268,58 @@ class DriverProfile:
             self.data = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             self.data = {"notes": []}
+        self.data.setdefault("notes", [])
+        self.data.setdefault("preferences", {})
+
+    def _save(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
+
+    def set_preference(self, topic: str, preference: str) -> dict:
+        topic = (topic or "other").strip().lower().replace(" ", "_")
+        topic = topic if topic in PREF_TOPICS else "other"
+        old = self.data["preferences"].get(topic)
+        hist = (old or {}).get("history", [])
+        if old:
+            hist = (hist + [{"text": old["text"], "since": old["since"]}])[-5:]
+        self.data["preferences"][topic] = {"text": preference.strip()[:240], "since": time.strftime("%Y-%m-%d"),
+                                           "history": hist}
+        self._save()
+        return {"topic": topic, "now": preference, "previous": old["text"] if old else None,
+                "note": "acknowledge the change briefly if it replaces a previous preference"}
+
+    def forget(self, what: str) -> dict:
+        w = (what or "").lower().strip()
+        removed = [t for t in list(self.data["preferences"]) if t == w.replace(" ", "_") or w in self.data["preferences"][t]["text"].lower()]
+        for t in removed:
+            del self.data["preferences"][t]
+        before = len(self.data["notes"])
+        self.data["notes"] = [n for n in self.data["notes"] if w not in n["note"].lower()]
+        self._save()
+        return {"removed_preferences": removed, "removed_notes": before - len(self.data["notes"])}
+
+    def preference_for(self, text: str) -> tuple[str, str] | None:
+        """(topic, preference) if this radio text is about a topic the driver has a preference on."""
+        t = text.lower()
+        for topic, pref in self.data["preferences"].items():
+            if any(k in t for k in PREF_TOPICS.get(topic, [])):
+                return topic, pref["text"]
+        return None
 
     def remember(self, note: str) -> dict:
         note = note.strip()[:300]
         if note and note not in [n["note"] for n in self.data["notes"]]:
             self.data["notes"].append({"date": time.strftime("%Y-%m-%d"), "note": note})
             self.data["notes"] = self.data["notes"][-40:]
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            self.path.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
+            self._save()
         return {"saved": note, "total_notes": len(self.data["notes"])}
 
     def summary(self) -> str:
-        return "; ".join(f"{n['date']}: {n['note']}" for n in self.data["notes"][-12:]) or "nothing yet"
+        prefs = "; ".join(f"{t}: {p['text']} (since {p['since']}" + (f", replaced: {p['history'][-1]['text']}" if p.get("history") else "")
+                          + ")" for t, p in self.data["preferences"].items())
+        notes = "; ".join(f"{n['date']}: {n['note']}" for n in self.data["notes"][-12:])
+        return (f"PREFERENCES (soft - follow them; if the data clearly disagrees, say so once with the number, then "
+                f"respect them): {prefs or 'none'}. NOTES: {notes or 'none'}")
 
 
 def brain_tools(store, profile: DriverProfile, defaults=lambda: {}) -> dict:
@@ -288,6 +342,8 @@ def brain_tools(store, profile: DriverProfile, defaults=lambda: {}) -> dict:
         "get_driving_style": lambda track=None: driving_style(store, track),
         "evaluate_strategy": strat,
         "remember": lambda note: profile.remember(note),
+        "set_preference": lambda topic, preference: profile.set_preference(topic, preference),
+        "forget": lambda what: profile.forget(what),
         "get_stored_lap": lambda lap=None: lap_detail_from_store(store, lap or "latest"),
     }
 

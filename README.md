@@ -162,6 +162,19 @@ Two ways, use either:
 - **Push-to-talk:** hold **Shift** (keyboard) or **right-stick click** (controller), speak, release. You hear a beep
   when the radio opens; keys are detected even while the game has focus.
 
+**Radio etiquette.** You always have priority: press Shift or say "Bono" and he stops mid-sentence, listens, then picks
+up where he left off ("As I was saying...") - nothing he meant to tell you is thrown away. If a call is due while he's
+still working on your question, he says "Still on what you asked. Meanwhile..." and answers later with context ("On
+the setup: ..."). After "Go ahead" you have 2.5 s to start talking (otherwise "Didn't hear anything"), and he waits
+for 1.4 s of quiet before deciding you've finished. With Shift there's no guessing: release = done.
+Voice commands: "say again", "stop", "quiet" (urgent calls only for five minutes), "radio on".
+
+**Memory.** Tell him how you like to drive or be coached ("coasting is fine for me on keyboard", "don't nag me about
+kerbs") and he keeps it as a preference per topic; saying something new on the same topic replaces it (the old one is
+kept as history). Preferences are soft: he follows them, but if a specific corner clearly costs time he'll say so
+once ("Your call on coasting, but for the record: Village, three tenths"). Goals and facts are remembered as notes.
+See and delete everything on the dashboard's Engineer tab.
+
 He confirms straight away what he's doing ("Looking into setup changes.", "Let me gather your driving style.",
 "Running the strategy numbers."), answers plain facts instantly, and says "Say again?" if he heard the button but no
 words. Things to try:

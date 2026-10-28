@@ -316,8 +316,9 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     log(f"STT {stt.name} ready on {stt.device} ({time.perf_counter() - t:.1f}s)")
     outq.put(("ready", stt.device))
 
-    say_q: queue.PriorityQueue = queue.PriorityQueue()
-    seq = [0]
+    from f1engineer.floor import Floor
+    floor = Floor()
+    spoken: deque = deque(maxlen=12)       # (time, text) of what we said: ignored if the mic hears it back
     playing = threading.Event()
     ptt_sources = {"key": False, "pad": False, "game": False}
     rec = {"on": False, "chunks": []}
@@ -332,15 +333,34 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
         except Exception:
             pass
 
+    def speak_now(text: str):
+        """Short direct line ("Go ahead"), outside the queue: only used while the driver holds the floor."""
+        try:
+            audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
+            spoken.append((time.time(), text))
+            playing.set()
+            sd.play(audio, tts.sr)
+            sd.wait()
+        except Exception as e:
+            log(f"playback failed: {e!r}")
+        finally:
+            playing.clear()
+
     def player():
         while True:
-            prio, _, text = say_q.get()
-            if text is None:
+            it = floor.next()
+            if it is None:
                 return
-            if rec["on"]:
-                continue  # driver is talking: drop engineer chatter
+            text = it.text
+            if it.resumed:   # cut off earlier by the driver: pick the thread back up
+                text = "As I was saying, " + text[:1].lower() + text[1:]
+                it.resumed = False
+                log(f"resuming after the driver: {text[:60]!r}")
             try:
                 audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
+                if floor.current is not it:
+                    continue          # the driver cut in while we were synthesising; it's back in the queue
+                spoken.append((time.time(), text))
                 playing.set()
                 sd.play(audio, tts.sr)
                 sd.wait()
@@ -348,6 +368,15 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 log(f"playback failed: {e!r}")
             finally:
                 playing.clear()
+                if floor.done(it):
+                    outq.put(("spoken", it.key, it.kind))
+
+    def driver_floor(on: bool):
+        """The driver takes (or gives back) the floor: stop mid-sentence, resume it later."""
+        cut = floor.set_driver(on)
+        if cut is not None and playing.is_set():
+            sd.stop()
+        outq.put(("floor", "driver" if on else "free"))
 
     def set_ptt(src: str, down: bool, via: str = ""):
         with lock:
@@ -355,13 +384,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             ptt_sources[src] = down
             now = any(ptt_sources.values())
         if now and not was:
-            if playing.is_set():
-                sd.stop()  # barge-in
-            while not say_q.empty():
-                try:
-                    say_q.get_nowait()
-                except queue.Empty:
-                    break
+            driver_floor(True)         # barge-in: he stops, and resumes that sentence afterwards
             rec["chunks"] = list(preroll)
             rec["on"] = True
             beep(1200)
@@ -370,9 +393,15 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             threading.Thread(target=finish, daemon=True).start()
 
     def finish():
-        time.sleep(0.25)  # tail of the last word
+        time.sleep(0.3)   # tail of the last word
         rec["on"] = False
         beep(800)
+        try:
+            transcribe_ptt()
+        finally:
+            driver_floor(False)
+
+    def transcribe_ptt():
         try:
             if not rec["chunks"]:
                 log("PTT released: no microphone audio captured (check the Windows default input device)")
@@ -381,18 +410,16 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             level = 20 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-9)
             if len(audio) < 16000 * 0.3:
                 log(f"PTT released after {len(audio) / 16000:.2f}s: too short, hold the key while you speak")
+                outq.put(("transcript", "", 0))
                 return
             t0 = time.perf_counter()
             with stt_lock:
                 text = stt.transcribe_safe(audio, cfg, log)
             ms = (time.perf_counter() - t0) * 1000
             log(f"PTT released: {len(audio) / 16000:.1f}s audio, level {level:.0f} dBFS, recognised in {ms:.0f} ms on {stt.device}: {text!r}")
-            if text and not W.is_phantom(text) and level > -60:
-                outq.put(("transcript", text, round(ms)))
-            elif len(audio) > 16000 * 0.8:     # held the button properly but said nothing usable
-                outq.put(("transcript", "", round(ms)))
-                if level < -55:
-                    log("microphone is (nearly) silent: wrong input device or muted?")
+            outq.put(("transcript", text or "", round(ms)))   # pressed = heard: no second-guessing
+            if not text and level < -55:
+                log("microphone is (nearly) silent: wrong input device or muted?")
         except Exception as e:
             log(f"speech recognition failed: {e!r}")
 
@@ -403,7 +430,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             rec["chunks"].append(indata.copy())
         else:
             preroll.append(indata.copy())
-            if wake_on and not playing.is_set():   # never listen to our own voice
+            if wake_on:
                 try:
                     wake_q.put_nowait(indata[:, 0].copy())
                 except queue.Full:
@@ -415,17 +442,31 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     wake_on = cfg.wake == "on" or (cfg.wake == "auto" and wk is not None)
     stt_lock = threading.Lock()
 
+    def echo(text: str) -> bool:
+        """Is this just our own voice coming back through the mic?"""
+        import difflib
+        t = text.lower().strip(" .!?")
+        return any(time.time() - ts < 25 and difflib.SequenceMatcher(None, t, said.lower()).ratio() > 0.6
+                   for ts, said in list(spoken))
+
     def wake_loop():
         names = W.variants(cfg.wake_name, (wk or {}).get("heard"))
-        gate = W.VoiceGate(W.safe_threshold(wk), hang=1.2)   # a breath mid-sentence isn't the end
-        arm = False
-        await_until = 0.0
+        gate = W.VoiceGate(W.safe_threshold(wk), hang=1.4, max_len=15.0)   # 1.4 s of quiet = you've finished
+        window_until = 0.0        # after "Go ahead": you have 2.5 s to start talking
         log(f"wake word on: say 'Hey {cfg.wake_name}' (trigger level {gate.th:.0f} dBFS)")
         while True:
-            block = wake_q.get()
-            if arm:                      # first audio after "Go ahead" finished playing: the question starts now
-                gate.arm()
-                arm = False
+            try:
+                block = wake_q.get(timeout=0.1)
+            except queue.Empty:
+                block = None
+            if window_until and not gate.active and time.time() > window_until:
+                window_until = 0.0
+                speak_now(random.choice(["Didn't hear anything. Say Bono when you're ready.",
+                                         "Nothing heard. Call me again when you're ready."]))
+                driver_floor(False)
+                continue
+            if block is None:
+                continue
             seg = gate.feed(block)
             if seg is None or rec["on"]:
                 continue
@@ -435,26 +476,34 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             except Exception as e:
                 log(f"wake transcription failed: {e!r}")
                 continue
-            if not text or W.is_phantom(text):
+            if not text or W.is_phantom(text) or echo(text):
+                if window_until:
+                    continue
                 continue
-            if time.time() < await_until:          # the question after "Bono? - Go ahead."
-                await_until = 0.0
+            if window_until:                       # the question after "Go ahead"
+                window_until = 0.0
                 log(f"wake question: {text!r}")
                 outq.put(("transcript", text, 0))
+                driver_floor(False)
                 continue
             call, rest = W.split_wake(text, names)
             if not call:
                 continue
             log(f"wake word heard: {text!r}")
+            driver_floor(True)                     # barge-in if he was talking; he'll resume afterwards
+            beep(1200)
             if len(rest.split()) >= 3:
-                beep(1200)
                 outq.put(("transcript", rest, 0))
+                driver_floor(False)
             else:
-                beep(1200)
-                seq[0] += 1
-                say_q.put((0, seq[0], random.choice(["Go ahead.", "Yep, go.", "Listening."])))
-                await_until = time.time() + 12.0
-                arm = True
+                speak_now(random.choice(["Go ahead.", "Yep, go.", "Listening."]))
+                while not wake_q.empty():          # drop what the mic heard of our own "Go ahead"
+                    try:
+                        wake_q.get_nowait()
+                    except queue.Empty:
+                        break
+                gate.reset()
+                window_until = time.time() + 2.5
     if wake_on:
         threading.Thread(target=wake_loop, name="wake", daemon=True).start()
 
@@ -559,12 +608,16 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 pass
             continue
         if msg[0] == "say":
-            seq[0] += 1
-            say_q.put((msg[2], seq[0], msg[1]))
+            _, text, kind, key, ttl = msg
+            floor.put(text, kind, key, ttl)
+        elif msg[0] == "hush":             # "stop": this message ends now; the queue waits
+            cut = floor.current
+            if cut is not None and playing.is_set():
+                floor.interrupted = True
+                sd.stop()
         elif msg[0] == "ptt":
             set_ptt("game", msg[1])
         elif msg[0] == "quit":
-            say_q.put((-1, 0, None))
             if mic:
                 mic.stop()
             return
@@ -579,7 +632,9 @@ class SpeechClient:
         self.proc = ctx.Process(target=worker, args=(cfg, self.inq, self.outq), name="f1e-speech", daemon=True)
         self.proc.start()
         self.on_transcript = on_transcript
+        self.on_spoken = None             # engine callback(key, kind)
         self.device = None
+        self.driver_talking = False
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
@@ -593,11 +648,20 @@ class SpeechClient:
                 threading.Thread(target=self.on_transcript, args=(m[1],), daemon=True).start()
             elif m[0] == "ready":
                 self.device = m[1]
+            elif m[0] == "floor":
+                self.driver_talking = m[1] == "driver"
+            elif m[0] == "spoken":
+                if self.on_spoken:
+                    self.on_spoken(m[1], m[2])
             else:
                 print(f"[speech] {m[1]}")
 
-    def say(self, text: str, priority: int = 5) -> None:
-        self.inq.put(("say", text, priority))
+    def say(self, text: str, priority: int = 5, kind: str | None = None, key: str = "", ttl: float | None = None) -> None:
+        kind = kind or ("urgent" if priority <= 0 else "answer" if priority == 1 else "proactive")
+        self.inq.put(("say", text, kind, key, ttl))
+
+    def hush(self) -> None:
+        self.inq.put(("hush",))
 
     def ptt(self, down: bool) -> None:
         self.inq.put(("ptt", down))

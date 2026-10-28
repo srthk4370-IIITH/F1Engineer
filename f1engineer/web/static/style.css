@@ -190,3 +190,9 @@ ul.advice { margin: 0; padding-left: 18px; } ul.advice li { margin-bottom: 6px; 
   nav#tabs { margin-left: 0; } .race-grid { grid-template-columns: 1fr; }
 }
 .btn.more { width: 100%; margin-top: 6px; }
+
+.memory { display: flex; flex-direction: column; gap: 8px; }
+.mem { display: grid; grid-template-columns: 110px 1fr auto; gap: 12px; align-items: center; padding: 8px 10px; background: var(--surface-2); border-radius: 10px; }
+.mem b { display: block; font-weight: 600; } .mem small { display: block; }
+.mem .tag { font: 700 11px var(--num); text-transform: uppercase; letter-spacing: .8px; color: var(--text-2); }
+.mem .tag.note { color: var(--text-3); }

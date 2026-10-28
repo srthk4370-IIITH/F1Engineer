@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import random
 import re
+import time
 
 import numpy as np
 
@@ -21,6 +22,13 @@ REASONING = re.compile(r"\b(why|should|how (do|can|to|would)|what if|better|impr
 def _w(rx: str):
     return re.compile(rx)
 
+
+COMMANDS = [  # radio commands: always instant, never the AI
+    ("repeat", _w(r"^(say (that )?again|repeat( that)?|come again|what did you say)\b")),
+    ("stop", _w(r"^(stop|stop talking|shut up|enough|hold on|wait)\b")),
+    ("quiet", _w(r"\b(quiet|less talking|talk less|silence|leave me alone|stop the chatter)\b")),
+    ("radio_on", _w(r"\b(radio on|talk to me|you can talk|back on)\b")),
+]
 
 INTENTS = [  # (name, pattern) - first match wins
     ("radio_check", _w(r"radio check|how do you read|do you (read|copy|hear) me|can you hear")),
@@ -68,17 +76,54 @@ def ack_for(question: str) -> str:
     return random.choice(["Copy, checking.", "We're checking.", "Stand by."])
 
 
-def answer(eng, question: str) -> str | None:
-    q = question.lower()
+def classify(question: str) -> str | None:
+    q = question.lower().strip()
+    cmd = next((name for name, rx in COMMANDS if rx.search(q)), None)
+    if cmd:
+        return cmd
     if REASONING.search(q):
         return None
-    intent = next((name for name, rx in INTENTS if rx.search(q)), None)
+    return next((name for name, rx in INTENTS if rx.search(q)), None)
+
+
+def instant(question: str) -> bool:
+    """Will this be answered without the AI? (no side effects)"""
+    return classify(question) is not None
+
+
+def answer(eng, question: str) -> str | None:
+    intent = classify(question)
     if intent is None:
         return None
+    if intent == "repeat":
+        return eng.last_message() or "Nothing to repeat yet."
+    if intent == "stop":
+        eng.speech.hush()
+        return "Okay."
+    if intent == "quiet":
+        eng.quiet_until = time.time() + 300
+        return "Going quiet. Urgent calls only for five minutes. Say radio on to bring me back."
+    if intent == "radio_on":
+        eng.quiet_until = 0.0
+        return "Radio's back on."
     try:
         return _answer(eng, intent)
     except Exception:
         return None   # missing data: let the AI handle it gracefully
+
+
+TOPICS = [(_w(r"setup|wing|diff|camber|toe|suspension|anti.?roll|brake bias|pressure"), "the setup"),
+          (_w(r"style|kind of driver"), "your driving style"), (_w(r"improv|progress"), "your progress"),
+          (_w(r"strategy|pit|box|stop|stint|undercut"), "strategy"), (_w(r"tyre|tire"), "the tyres"),
+          (_w(r"lap|sector|corner|turn \d+|losing|slow|braking|apex"), "that lap")]
+
+
+def lead_in(question: str) -> str:
+    """Context for an answer that comes late or after something else: 'On the setup: ...'."""
+    t = next((name for rx, name in TOPICS if rx.search(question.lower())), None)
+    if t:
+        return random.choice([f"On {t}: ", f"Back to your question on {t}: ", f"About {t}: "])
+    return random.choice(["On what you asked: ", "Back to your question: "])
 
 
 def _say(*options: str) -> str:

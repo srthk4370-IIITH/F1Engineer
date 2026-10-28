@@ -95,6 +95,14 @@ def create_app(engine) -> FastAPI:
     def laps():
         return engine.store.list_laps()
 
+    @app.get("/api/memory")
+    def memory():
+        return engine.profile.data
+
+    @app.delete("/api/memory")
+    def forget(what: str):
+        return engine.profile.forget(what)
+
     @app.get("/api/race/{session}")
     def race(session: str):
         return engine.store.race_log(session)

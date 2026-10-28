@@ -40,7 +40,10 @@ ANALYSIS (analysis, strategist): your own initiative or an explicit "debrief / b
   call of at most two sentences.
 - Adapt to the game, input device, assists and skill tier in the context (simple and encouraging for a learner,
   hundredths-level for a quick driver). search_knowledge has notes per game ("Which game: ...") and per track.
-- When the driver shares a goal, preference or fact about themselves, save it with remember.
+- Be solution-oriented: every call ends with a concrete action (what to change, where, by how much).
+- Memory: goals and facts -> remember. How they like to drive or be coached -> set_preference (a new one on the same
+  topic replaces the old; when it does, acknowledge the change in a few words). Preferences are soft: follow them, but
+  if the data clearly shows they cost time in a specific place, say so once with the number, then respect their call.
 
 Driver profile (things they asked you to remember): {profile}
 Live context: {context}"""
@@ -51,7 +54,7 @@ MODES = {  # reasoning effort and answer budget per mode
     "garage": {"effort": "none", "max_tokens": 400},       # old name for chat
     "review": {"effort": "low", "max_tokens": 900},
     "analysis": {"effort": "low", "max_tokens": 1200},     # deep, agentic: delivered on slow laps / in the garage
-    "strategist": {"effort": "low", "max_tokens": 400},    # the engineer's own unprompted calls
+    "strategist": {"effort": "low", "max_tokens": 500},    # the engineer's own unprompted calls
 }
 
 _OFFER = re.compile(r"^(if you (want|like)|do you want|would you like|want me to|let me know|shall i|i can also|"
@@ -92,8 +95,15 @@ TOOL_SCHEMAS = [
       "total_laps": {"type": "integer"}, "current_lap": {"type": "integer"},
       "start_compound": {"type": "string"}, "tyre_age": {"type": "integer"}, "base_lap_s": {"type": "number"},
       "pit_loss_s": {"type": "number"}}),
-    ("remember", "Save something about the driver for future sessions (goal, preference, recurring problem).",
+    ("remember", "Save a goal or fact about the driver for future sessions (not preferences: use set_preference).",
      {"note": {"type": "string"}}),
+    ("set_preference", "The driver states how they like to drive or be coached ('coasting is fine on keyboard', "
+     "'don't nag me about kerbs', 'talk less'). One per topic: a new one replaces the old (history kept).",
+     {"topic": {"type": "string", "enum": ["coasting", "braking", "lockups", "track_limits", "throttle", "steering",
+                                           "trail_braking", "kerbs", "setup", "tyres", "fuel", "talking", "other"]},
+      "preference": {"type": "string", "description": "the preference in the driver's own terms"}}),
+    ("forget", "Remove a preference (by topic) or notes containing some text, when the driver asks.",
+     {"what": {"type": "string"}}),
     ("get_race_history", "This race lap by lap: position, gaps ahead/behind, tyre compound, wear and temps, fuel, ERS, "
      "safety car, weather. Use it to see trends (tyre deg, gap closing, position changes).", {}),
     ("get_stored_lap", "A stored lap's corner report from the database (works away from the game).",

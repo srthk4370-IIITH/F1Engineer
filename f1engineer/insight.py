@@ -52,7 +52,7 @@ class Patterns:
                     f"{name} again, that's three laps running, about {radio.fmt_d(np.mean(recent))} each time.{why}",
                     f"We keep losing {radio.fmt_d(np.mean(recent))} in {name}, three laps now.{why}",
                     f"Pattern in {name}: {radio.fmt_d(np.mean(recent))} a lap for three laps.{why}"]),
-                    "straight", 120, f"pattern_{name}"))
+                    "straight", 120, f"pattern_{name}", evidence=float(np.mean(recent))))
                 break   # one pattern call per lap is plenty
         self.laps.append((rep.lap_num, rep.lap_time, wear_pct, rep.valid))
         t = self._trend()

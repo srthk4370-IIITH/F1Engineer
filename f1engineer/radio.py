@@ -34,6 +34,7 @@ class Message:
     kind: str = field(default="straight", compare=False)   # urgent | straight | debrief | garage
     ttl: float = field(default=45.0, compare=False)
     key: str = field(default="", compare=False)
+    evidence: float = field(default=0.0, compare=False)   # seconds this call is about (lets a preference be overruled)
 
     @property
     def duration(self) -> float:
@@ -95,7 +96,7 @@ def radio_check(tr, compound: str, best: float | None) -> str:
     if tr.is_time_trial:
         target = (pick(f" Best here is {short_t(best)}, let's beat it.", f" Target's your {short_t(best)}.")
                   if best else pick(" No time here yet, build up to it.", " First run here, take a couple of laps to find it."))
-        return f"Radio check, {_name()} here. {temps}, {wx}.{tyre}{target}"
+        return f"Radio check. {temps}, {wx}.{tyre}{target}"
     if tr.is_race:
         laps = s.get("totalLaps")
         grid = tr.lapdata[tr.player_idx]["gridPosition"] if tr.lapdata is not None else 0
@@ -130,7 +131,7 @@ def tt_lap_messages(rep, sass_level: int, is_best: bool) -> list[Message]:
         cause = top["causes"][0] if top["causes"] else "slower there"
         msgs.append(Message(2, now, f"{top['corner']}, {fmt_d(top['time_loss'])}: {cause}."
                             + sass("lockup" if top["lockup"] else "offtrack" if top["off_track"] else "loss", sass_level),
-                            "straight", 90, "loss0"))
+                            "straight", 90, "loss0", evidence=top["time_loss"]))
     if rep.gains and rep.gains[0]["time_loss"] <= -0.15 and random.random() < 0.5:
         msgs.append(Message(5, now, pick(f"Good through {rep.gains[0]['corner']}.", f"{rep.gains[0]['corner']} was strong."),
                             "straight", 90, "gain"))
@@ -165,7 +166,7 @@ def next_lap_messages(rep, advice: list[dict], said: set[str], adapt: dict | Non
             tip = next((t for frag, t in KEYBOARD_TIPS.items() for cause in c["causes"] if frag in cause), None)
         tip = tip or next((t for frag, t in TIPS for cause in c["causes"] if frag in cause), None)
         if tip:
-            msgs.append(Message(4, now, f"Next lap, {c['corner']}: {tip}.", "straight", 120, "focus"))
+            msgs.append(Message(4, now, f"Next lap, {c['corner']}: {tip}.", "straight", 120, "focus", evidence=c["time_loss"]))
     for a in advice[:1]:
         if a["change"] not in said:
             said.add(a["change"])
@@ -239,6 +240,7 @@ class RadioScheduler:
         self.queue: list[Message] = []
         self.busy_until = 0.0
         self.calm_until = 0.0
+        self.filter = None       # engine hook: Message -> text to say (or None to drop)
         self.spoken_keys: dict[str, float] = {}
 
     def push(self, msgs: list[Message]) -> None:
@@ -273,8 +275,8 @@ class RadioScheduler:
         candidates = self.queue if now - top.created > 15 else [top]
         parked = bool(ctx.get("paused") or ctx.get("in_garage"))
         for m in candidates:
-            if ctx.get("talking") and m.kind != "urgent":
-                continue  # the driver is being answered: routine calls wait
+            if (ctx.get("talking") or ctx.get("quiet")) and m.kind != "urgent":
+                continue  # the driver has the floor / is being answered / asked for quiet: routine calls wait
             if m.kind == "garage":
                 if not (parked or ctx.get("cooldown")):
                     continue  # deep analysis waits for a quiet moment: garage, pause, slow lap, safety car
@@ -283,8 +285,11 @@ class RadioScheduler:
             if m.kind != "urgent" and now < self.calm_until:
                 continue
             self.queue.remove(m)
+            text = self.filter(m) if self.filter else m.text
+            if not text:
+                continue          # the driver's preference covers this and the evidence isn't strong enough
             self.busy_until = now + m.duration
             self.calm_until = self.busy_until + (3.0 if m.kind != "urgent" else 0.0)
             self.spoken_keys[m.key] = now
-            self.say(m.text, m.priority)
+            self.say(text, m.priority, m)
             return

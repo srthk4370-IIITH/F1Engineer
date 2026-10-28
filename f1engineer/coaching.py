@@ -44,10 +44,11 @@ class LiveCoach:
     # ---- helpers -----------------------------------------------------------------
     SUMMARY_KEYS = {"lap_head", "loss0", "loss1", "gain", "focus"}
 
-    def _push(self, text: str, priority: int = 1, ttl: float = 12.0, key: str = "live", kind: str = "straight") -> None:
+    def _push(self, text: str, priority: int = 1, ttl: float = 12.0, key: str = "live", kind: str = "straight",
+              evidence: float = 0.0) -> None:
         if key in ("live", "sector") and any(m.key in self.SUMMARY_KEYS for m in self.eng.sched.queue):
             return  # the last lap's debrief goes first; a stale corner call would only bury it
-        self.eng.sched.push([radio.Message(priority, radio.CLOCK(), text, kind, ttl, key)])
+        self.eng.sched.push([radio.Message(priority, radio.CLOCK(), text, kind, ttl, key, evidence=evidence)])
 
     @property
     def sass(self) -> int:
@@ -194,7 +195,7 @@ class LiveCoach:
             if now - self._race_mistake_said < 120:
                 return
             self._race_mistake_said = now
-        self._push(txt, priority=1, ttl=12, key="live")
+        self._push(txt, priority=1, ttl=12, key="live", evidence=max(0.0, m.time_loss))
 
     def _metrics(self, lap, c: LM.Corner, dist: float):
         """Corner metrics for the in-progress lap (grid-resampled up to the current distance, padded with the reference)."""
