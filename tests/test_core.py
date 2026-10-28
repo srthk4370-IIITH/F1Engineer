@@ -363,3 +363,14 @@ def test_wake_word_split_and_voice_gate():
     quiet, loud = np.full(1600, 1e-4, np.float32), (np.sin(np.arange(1600) / 5) * 0.1).astype(np.float32)
     segs = [s for b in [quiet] * 3 + [loud] * 8 + [quiet] * 8 for s in [gate.feed(b)] if s is not None]
     assert len(segs) == 1 and 0.8 < len(segs[0]) / 16000 < 1.8
+
+
+def test_every_module_imports():
+    """A syntax error anywhere (even in code tests don't exercise, like the setup wizard) must fail the suite."""
+    import importlib
+    import pkgutil
+    import f1engineer
+    for m in pkgutil.walk_packages(f1engineer.__path__, "f1engineer."):
+        if m.name.endswith("__main__"):
+            continue
+        importlib.import_module(m.name)

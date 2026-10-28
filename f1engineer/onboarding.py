@@ -114,10 +114,8 @@ def main() -> None:
     env["F1E_PTT_BUTTON"] = _ask("  Push-to-talk controller button (A,B,X,Y,LB,RB,LS,RS,VIEW,DPAD_*) - pick one you\n"
                                  "  don't use for driving", env.get("F1E_PTT_BUTTON", "RS"))
     env["F1E_GPU"] = "auto" if _yes("  Use the GPU for speech recognition when it's free?", env.get("F1E_GPU", "auto") == "auto") else "off"
-    print("  Speech recognition:
-"
-          "    1. Local (default): Whisper on this PC, private, ~0.2 s on a free GPU (~1.5 s on CPU)
-"
+    print("  Speech recognition:\n"
+          "    1. Local (default): Whisper on this PC, private, ~0.2 s on a free GPU (~1.5 s on CPU)\n"
           "    2. OpenAI cloud: most accurate in a noisy room (mic hearing the game), ~1-2 s, uses your API key")
     cur = "2" if env.get("F1E_STT") == "openai" else "1"
     pick = _ask("  Which?", cur)
