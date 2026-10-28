@@ -193,7 +193,7 @@ requires-dist = [
     { name = "uvicorn", specifier = ">=0.29" },
     { name = "websockets", specifier = ">=17.3" },
 ]
-provides-extras = ["speech", "llm", "gpu"]
+provides-extras = ["gpu"]
 
 [package.metadata.requires-dev]
 dev = [
