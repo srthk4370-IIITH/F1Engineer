@@ -149,6 +149,9 @@ def main() -> None:
         print(f"  No audio device found: {e!r}")
     if _yes("  Play a test radio message and record 3 s from your mic?"):
         _audio_test(cfg)
+    if _yes(f"  Set up hands-free radio? You say 'Hey {cfg.wake_name}' + your question, no button needed"):
+        from f1engineer import wake
+        wake.enrol(cfg, cfg.wake_name)
 
     # 6. autostart
     print("\n[6/6] Start automatically with the game")

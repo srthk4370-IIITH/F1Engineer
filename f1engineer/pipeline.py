@@ -29,6 +29,7 @@ class Question:
         self.q: queue.Queue = queue.Queue()
         self.answer = ""
         self.source = "ai"
+        self.acked = False
         self.done = threading.Event()
 
 
@@ -53,6 +54,9 @@ class AskPipeline:
             q = Question(self.seq, text, mode or self.eng.mode())
             self.recent = {k: v for k, v in self.recent.items() if time.time() - v.asked < 30}
             self.recent[key] = q
+        if quick.answer(self.eng, text) is None:   # going to the AI: say we heard it, straight away
+            q.acked = True
+            self.eng.speech.say(quick.ack_for(text), 1)
         history = list(self.eng.agent.history)   # each answer sees the conversation as it was when asked
         self.pool.submit(self._generate, q, history)
         self.pending.put(q)
@@ -80,7 +84,7 @@ class AskPipeline:
                 q.done.set()
                 continue
             self.busy = True
-            out, acked = [], False
+            out, acked = [], q.acked
             t0 = time.time()
             try:
                 while True:

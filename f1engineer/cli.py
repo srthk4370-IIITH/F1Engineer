@@ -8,6 +8,7 @@
   import     analyse a recorded .f1cap into the lap database
   replay     replay a .f1cap capture over UDP into a running engine
   record     record raw telemetry to data/captures
+  wake       teach the engineer your "Hey Bono" (hands-free radio)
   setup      first-time onboarding
   doctor     check everything
 """
@@ -157,6 +158,15 @@ def cmd_import(a) -> None:
     print("[import] done. Open: uv run f1engineer dashboard")
 
 
+def cmd_wake(a) -> None:
+    """Teach the engineer your voice saying his name (hands-free radio)."""
+    from f1engineer import wake
+    from f1engineer.config import Config
+    cfg = Config()
+    print(f"Hands-free radio: say 'Hey {a.name or cfg.wake_name}' and your question (or just the name, then the question).")
+    wake.enrol(cfg, a.name or cfg.wake_name)
+
+
 def cmd_watch(a) -> None:
     from f1engineer import watcher
     if a.detach:
@@ -237,6 +247,9 @@ def main(argv=None) -> None:
     i.add_argument("captures", nargs="*", help=".f1cap files (default: the 2 newest in data/captures)")
     i.set_defaults(fn=cmd_import)
     sub.add_parser("record").set_defaults(fn=cmd_record)
+    k = sub.add_parser("wake")
+    k.add_argument("--name", default=None, help="the engineer's name / wake word (default Bono)")
+    k.set_defaults(fn=cmd_wake)
     sub.add_parser("setup").set_defaults(fn=cmd_setup)
     sub.add_parser("doctor").set_defaults(fn=cmd_doctor)
     a = ap.parse_args(argv)

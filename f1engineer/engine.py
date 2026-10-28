@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import queue
+import random
 from collections import deque
 import socket
 import threading
@@ -229,6 +230,14 @@ class Engine:
                         self._say(f"Out lap done, {radio.fmt_t(lap.lap_time)}. Tyres are in, now we push.", 3)
                     else:
                         issues = coach.self_review(self.ref["rs"], self.corners)
+                        if not isinstance(self.agent.provider, MockProvider):   # independent AI read of lap 1
+                            self._debrief_pending = lap.lap_num
+                            self._last_strategist = 0
+                            self._strategist(
+                                f"first lap at this track ({radio.short_t(lap.lap_time)}), no reference yet: analyse it on "
+                                "its own (sectors, inputs, mistakes, style via get_last_lap_report and get_driving_style) "
+                                "and give the single most useful call for the next lap, plus one setup change with a "
+                                "value if the data supports it", replace_key="focus")
                         self._first_review = {
                             "lap": lap.lap_num, "lap_time": round(lap.lap_time, 3), "valid": not lap.invalid,
                             "sectors_ms": list(lap.sector_ms), "input_device": self.input_device,
@@ -370,7 +379,8 @@ class Engine:
     def ask(self, question: str, mode: str | None = None, wait: float = 90) -> str:
         """Driver question (STT or dashboard chat): queued, answered in order, spoken as sentences arrive."""
         question = question.strip()
-        if not question:
+        if not question:   # the button worked but no words came through
+            self._say(random.choice(["Didn't catch that, say again.", "Say again?", "Missed that, come again."]), 1)
             return ""
         self._emit({"type": "radio", "role": "driver", "text": question})
         self._bg_put(self.store.log_radio, self.tr.session_uid, "driver", question)

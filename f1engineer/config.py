@@ -32,7 +32,10 @@ class Config:
     ptt_game_button: str = field(default_factory=lambda: _env("F1E_PTT_BUTTON", "RS"))  # see packets_2020.BUTTONS
     stt_model: str = field(default_factory=lambda: _env("F1E_STT_MODEL", "auto"))
     tts_voice: str = field(default_factory=lambda: _env("F1E_TTS_VOICE", "en_GB-alan-medium"))
-    tts_speed: float = field(default_factory=lambda: _env("F1E_TTS_SPEED", 1.3, float))  # 1.0 = Piper default pace
+    tts_speed: float = field(default_factory=lambda: _env("F1E_TTS_SPEED", 1.4, float))  # 1.0 = Piper default pace
+    wake: str = field(default_factory=lambda: _env("F1E_WAKE", "on"))            # on | off (enrol with `f1engineer wake` for accuracy)
+    wake_name: str = field(default_factory=lambda: _env("F1E_WAKE_NAME", "Bono"))  # the engineer's name = wake word
+    radio_fx: str = field(default_factory=lambda: _env("F1E_RADIO_FX", "light"))           # light | full | off
     volume: float = field(default_factory=lambda: _env("F1E_VOLUME", 1.0, float))  # radio loudness 0..1
     gpu: str = field(default_factory=lambda: _env("F1E_GPU", "auto"))  # auto | off
     speech: bool = field(default_factory=lambda: _env("F1E_SPEECH", True, bool))

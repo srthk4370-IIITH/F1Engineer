@@ -14,13 +14,14 @@ import sys
 import re
 import multiprocessing as mp
 import queue
+import random
 import threading
 from collections import deque
 import time
 
 import numpy as np
 
-STT_PROMPT = ("F1 race engineer radio. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
+STT_PROMPT = ("F1 race engineer radio. Hey Bono. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
               "Luffield, the Loop. Box box, undercut, overcut, DRS, ERS, softs, mediums, hards, inters, brake bias, "
               "front wing, rear wing, differential, understeer, oversteer, lock-up, tyre wear, delta, sector, lap time.")
 
@@ -31,10 +32,16 @@ def _bandpass(sr: int, lo: float = 300, hi: float = 3400, taps: int = 101) -> np
     return (h * np.hamming(taps)).astype(np.float32)
 
 
-def radio_fx(x: np.ndarray, sr: int) -> np.ndarray:
-    """Cheap team-radio colour: band-limit ~300-3400 Hz, light saturation, squelch clicks."""
-    y = np.convolve(x.astype(np.float32) / 32768.0, _bandpass(sr), mode="same")
-    y = np.tanh(y * 2.5) * 0.8
+FX = {"light": (180, 6500, 1.2), "full": (300, 3400, 2.5)}   # band (Hz) and saturation drive
+
+
+def radio_fx(x: np.ndarray, sr: int, mode: str = "light") -> np.ndarray:
+    """Team-radio colour. light (default): a hint of radio, still crisp; full: classic narrow, crunchy pit radio."""
+    if mode == "off":
+        return x.astype(np.float32) / 32768.0
+    lo, hi, drive = FX.get(mode, FX["light"])
+    y = np.convolve(x.astype(np.float32) / 32768.0, _bandpass(sr, lo, min(hi, sr / 2 - 500)), mode="same")
+    y = np.tanh(y * drive) / np.tanh(drive) * 0.9
     click = (np.random.rand(int(sr * 0.03)).astype(np.float32) - 0.5) * 0.25
     return np.concatenate([click, y, click * 0.6])
 
@@ -75,13 +82,14 @@ class TTS:
         self.sr = self.voice.config.sample_rate
         self.fx = fx
         self.speed = cfg.tts_speed
+        self.fx_mode = cfg.radio_fx
 
     def synth(self, text: str) -> np.ndarray:
         from piper.config import SynthesisConfig
         sc = SynthesisConfig(length_scale=1.0 / max(0.6, min(2.0, self.speed)), noise_scale=0.6, noise_w_scale=0.7)
         pcm = b"".join(ch.audio_int16_bytes for ch in self.voice.synthesize(speakable(text), syn_config=sc))
         x = np.frombuffer(pcm, dtype=np.int16)
-        return radio_fx(x, self.sr) if self.fx else x.astype(np.float32) / 32768.0
+        return radio_fx(x, self.sr, self.fx_mode) if self.fx else x.astype(np.float32) / 32768.0
 
 
 def _register_cuda_dlls() -> None:
@@ -295,7 +303,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             finally:
                 playing.clear()
 
-    def set_ptt(src: str, down: bool):
+    def set_ptt(src: str, down: bool, via: str = ""):
         with lock:
             was = any(ptt_sources.values())
             ptt_sources[src] = down
@@ -311,7 +319,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             rec["chunks"] = list(preroll)
             rec["on"] = True
             beep(1200)
-            log(f"PTT down ({src})")
+            log(f"PTT down ({src}{', ' + via if via else ''})")
         elif was and not now:
             threading.Thread(target=finish, daemon=True).start()
 
@@ -329,21 +337,74 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 log(f"PTT released after {len(audio) / 16000:.2f}s: too short, hold the key while you speak")
                 return
             t0 = time.perf_counter()
-            text = stt.transcribe_safe(audio, cfg, log)
+            with stt_lock:
+                text = stt.transcribe_safe(audio, cfg, log)
             ms = (time.perf_counter() - t0) * 1000
             log(f"PTT released: {len(audio) / 16000:.1f}s audio, level {level:.0f} dBFS, recognised in {ms:.0f} ms on {stt.device}: {text!r}")
             if text:
                 outq.put(("transcript", text, round(ms)))
-            elif level < -55:
-                log("microphone is (nearly) silent: wrong input device or muted?")
+            else:
+                outq.put(("transcript", "", round(ms)))
+                if level < -55:
+                    log("microphone is (nearly) silent: wrong input device or muted?")
         except Exception as e:
             log(f"speech recognition failed: {e!r}")
+
+    wake_q: queue.Queue = queue.Queue(maxsize=100)
 
     def mic_cb(indata, frames, t, status):
         if rec["on"]:
             rec["chunks"].append(indata.copy())
         else:
             preroll.append(indata.copy())
+            if wake_on and not playing.is_set():   # never listen to our own voice
+                try:
+                    wake_q.put_nowait(indata[:, 0].copy())
+                except queue.Full:
+                    pass
+
+    # ---- hands-free "Hey Bono" -------------------------------------------------------------------------
+    from f1engineer import wake as W
+    wk = W.load(cfg.data_dir / "wake.json")
+    wake_on = cfg.wake == "on" or (cfg.wake == "auto" and wk is not None)
+    stt_lock = threading.Lock()
+
+    def wake_loop():
+        names = W.variants(cfg.wake_name, (wk or {}).get("heard"))
+        gate = W.VoiceGate((wk or {}).get("threshold_db", -38.0))
+        await_until = 0.0
+        log(f"wake word on: say 'Hey {cfg.wake_name}' (trigger level {gate.th:.0f} dBFS)")
+        while True:
+            seg = gate.feed(wake_q.get())
+            if seg is None or rec["on"]:
+                continue
+            try:
+                with stt_lock:
+                    text = stt.transcribe_safe(seg, cfg, log)
+            except Exception as e:
+                log(f"wake transcription failed: {e!r}")
+                continue
+            if not text:
+                continue
+            if time.time() < await_until:          # the question after "Bono? - Go ahead."
+                await_until = 0.0
+                log(f"wake question: {text!r}")
+                outq.put(("transcript", text, 0))
+                continue
+            call, rest = W.split_wake(text, names)
+            if not call:
+                continue
+            log(f"wake word heard: {text!r}")
+            if len(rest.split()) >= 2:
+                beep(1200)
+                outq.put(("transcript", rest, 0))
+            else:
+                beep(1200)
+                seq[0] += 1
+                say_q.put((0, seq[0], random.choice(["Go ahead.", "Yep, go.", "Listening."])))
+                await_until = time.time() + 8.0
+    if wake_on:
+        threading.Thread(target=wake_loop, name="wake", daemon=True).start()
 
     threading.Thread(target=player, daemon=True).start()
     mic = None
@@ -358,20 +419,30 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     except Exception as e:
         log(f"no microphone: {e!r}")
 
+    # keyboard PTT: several independent detectors feed ONE key state (latest event wins, so nothing sticks)
+    key_state = {"down": False, "since": 0.0}
+
+    def key_event(src: str, down: bool):
+        with lock:
+            if down == key_state["down"]:
+                return
+            key_state["down"], key_state["since"] = down, time.time()
+        set_ptt("key", down, via=src)
+
     vk = _vk_code(cfg.ptt_key) if sys.platform == "win32" else None
     if vk:
-        def key_poll():
-            user32, last = ctypes.windll.user32, False
-            while True:
-                down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
-                if down != last:
-                    set_ptt("key", down)
-                    last = down
-                time.sleep(0.015)
-        threading.Thread(target=key_poll, daemon=True).start()
+        from f1engineer import winkeys
+        winkeys.raw_input_listener(vk, lambda d: key_event("raw input", d), log)
+        winkeys.poll_listener(vk, lambda d: key_event("key state", d))
+
+    def stuck_guard():   # a missed release must never leave the mic open
+        while True:
+            time.sleep(1)
+            if key_state["down"] and time.time() - key_state["since"] > 20:
+                log("PTT held over 20 s: releasing")
+                key_event("guard", False)
+    threading.Thread(target=stuck_guard, daemon=True).start()
     try:
-        if vk:
-            raise ImportError("polling instead")   # Windows uses the poller above
         from pynput import keyboard
         key = cfg.ptt_key.lower()
 
@@ -380,8 +451,8 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             name = getattr(k, "name", None)
             return getattr(k, "char", None) and k.char.lower() == key or name in (key, key + "_l", key + "_r")
 
-        kl = keyboard.Listener(on_press=lambda k: match(k) and set_ptt("key", True),
-                               on_release=lambda k: match(k) and set_ptt("key", False))
+        kl = keyboard.Listener(on_press=lambda k: match(k) and key_event("hook", True),
+                               on_release=lambda k: match(k) and key_event("hook", False))
         kl.daemon = True
         kl.start()
     except ImportError:
@@ -466,7 +537,7 @@ class SpeechClient:
             except (EOFError, OSError):
                 return
             if m[0] == "transcript":
-                print(f"[speech] heard ({m[2]} ms): {m[1]}")
+                print(f"[speech] heard ({m[2]} ms): {m[1]!r}")
                 threading.Thread(target=self.on_transcript, args=(m[1],), daemon=True).start()
             elif m[0] == "ready":
                 self.device = m[1]

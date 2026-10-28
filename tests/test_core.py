@@ -349,3 +349,17 @@ def test_patterns_one_off_quiet_recurring_called_fixed_praised_and_tyre_trend():
     for n, (t, w) in enumerate([(90.0, 30), (90.2, 35), (90.4, 40), (90.6, 46)], 1):   # slower as tyres wear
         msgs += q.on_report(NS(lap_num=n, lap_time=t, valid=True, corners=[]), w)
     assert "tyre" in said(msgs).lower()                                # blamed on the tyres, not the driver
+
+
+def test_wake_word_split_and_voice_gate():
+    import numpy as np
+    from f1engineer import wake as W
+    names = W.variants("Bono", ["Hey, Bonnow."])
+    assert W.split_wake("Hey Bono. What are my tyre temps?", names) == (True, "What are my tyre temps?")
+    assert W.split_wake("Bonnow, should I pit?", names)[0]                      # learned from enrolment
+    assert W.split_wake("Bono.", names) == (True, "")
+    assert not W.split_wake("What a lovely day out there, bono", names)[0]      # name must lead the sentence
+    gate = W.VoiceGate(-38.0)
+    quiet, loud = np.full(1600, 1e-4, np.float32), (np.sin(np.arange(1600) / 5) * 0.1).astype(np.float32)
+    segs = [s for b in [quiet] * 3 + [loud] * 8 + [quiet] * 8 for s in [gate.feed(b)] if s is not None]
+    assert len(segs) == 1 and 0.8 < len(segs[0]) / 16000 < 1.8

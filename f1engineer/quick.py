@@ -46,6 +46,28 @@ INTENTS = [  # (name, pattern) - first match wins
 CORNER = ["rear left", "rear right", "front left", "front right"]
 
 
+ACKS = [  # instant, local: the driver knows he's been heard while the AI thinks
+    (_w(r"setup|wing|diff|camber|toe|ride height|suspension|anti.?roll|brake bias|pressure"),
+     ["Looking into setup changes.", "Let me check the setup.", "On it, looking at the setup."]),
+    (_w(r"style|kind of driver|how do i drive"), ["Let me gather your driving style.", "Pulling up your driving style."]),
+    (_w(r"improv|progress|getting (better|faster)"), ["Checking your progress.", "Let me look back over your laps."]),
+    (_w(r"strategy|pit|box|stop|undercut|overcut|stint|one.?stop|two.?stop"),
+     ["Running the strategy numbers.", "Checking the strategy.", "Let me run the numbers."]),
+    (_w(r"lap|sector|corner|turn \d+|losing|slow|where|braking|apex|exit"),
+     ["Looking at that lap.", "Checking the data.", "Let me look at the telemetry."]),
+    (_w(r"remember|my goal"), ["Noted.", "Got it, saving that."]),
+    (_w(r"why|explain|how (do|can|should)"), ["Good question, give me a second.", "Let me think about that."]),
+]
+
+
+def ack_for(question: str) -> str:
+    q = question.lower()
+    for rx, options in ACKS:
+        if rx.search(q):
+            return random.choice(options)
+    return random.choice(["Copy, checking.", "We're checking.", "Stand by."])
+
+
 def answer(eng, question: str) -> str | None:
     q = question.lower()
     if REASONING.search(q):

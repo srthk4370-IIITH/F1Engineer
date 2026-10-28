@@ -153,8 +153,17 @@ per track is remembered between sessions.
 
 ### Talking to the engineer
 
-Hold **Shift** (keyboard) or **right-stick click** (controller), speak, release. You hear a short beep when the radio
-opens and closes. Things to try:
+Two ways, use either:
+
+- **Hands-free: say "Hey Bono"** (the engineer's name, after Hamilton's engineer) followed by your question:
+  "Hey Bono, what are my tyre temps?". Or just "Bono", wait for "Go ahead", then ask. Run `uv run f1engineer wake`
+  once and say the name four times so it learns your voice and your room (setup offers this too).
+- **Push-to-talk:** hold **Shift** (keyboard) or **right-stick click** (controller), speak, release. You hear a beep
+  when the radio opens; keys are detected even while the game has focus.
+
+He confirms straight away what he's doing ("Looking into setup changes.", "Let me gather your driving style.",
+"Running the strategy numbers."), answers plain facts instantly, and says "Say again?" if he heard the button but no
+words. Things to try:
 
 - "Where am I losing time?" / "What happened at the Loop?" / "Why did I lock up?"
 - "What are my tyre temps?" / "Who am I racing?" / "What's the gap behind?"
@@ -170,6 +179,7 @@ opens and closes. Things to try:
 | Command | What it does |
 |---|---|
 | `uv run f1engineer setup` | Setup wizard (safe to re-run) |
+| `uv run f1engineer wake [--name Bono]` | Teach him your voice saying his name (hands-free radio) |
 | `uv run f1engineer doctor` | Health check: dependencies, models, key, microphone, GPU, game config, ports, autostart |
 | `uv run f1engineer run` | Start the engineer now (telemetry + radio + dashboard) |
 | `uv run f1engineer dashboard` | Review stored laps and chat, no game needed (hands over to the live engineer if the game starts) |
@@ -192,7 +202,9 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 | `OPENAI_MODEL` | `gpt-5.4-mini` | Chat model |
 | `F1E_SASS` | `2` | 0 professional ... 3 roasts you |
 | `F1E_TTS_VOICE` | `en_GB-alan-medium` | Piper voice |
-| `F1E_TTS_SPEED` | `1.3` | Speaking rate (1.0 = Piper default) |
+| `F1E_TTS_SPEED` | `1.4` | Speaking rate (1.0 = Piper default) |
+| `F1E_RADIO_FX` | `light` | Radio effect: `light` (crisp), `full` (narrow, crunchy pit radio), `off` |
+| `F1E_WAKE` / `F1E_WAKE_NAME` | `on` / `Bono` | Hands-free wake word and the engineer's name |
 | `F1E_PTT_KEY` / `F1E_PTT_BUTTON` | `shift` / `RS` | Push-to-talk key / controller button |
 | `F1E_MIC` | (Windows default) | Part of your microphone's name, e.g. `Kraken` |
 | `F1E_GPU` | `auto` | `auto` = use the GPU only while it has free memory; `off` = CPU |
@@ -240,7 +252,7 @@ Nothing to configure: the engineer works out what it's talking to and adapts.
 | Problem | Fix |
 |---|---|
 | No radio at all | `uv run f1engineer doctor`. Check UDP telemetry is on in the game (IP 127.0.0.1, port 20777) and nothing else is using port 20777. |
-| It doesn't hear me | You should hear a beep when you press push-to-talk. `doctor` shows which microphone is used; virtual mics (phone-webcam apps, Stereo Mix) record silence. Pick your real mic in `setup` or set `F1E_MIC`. Check `logs/engine.log` for "PTT released ... level ... dBFS". |
+| It doesn't hear me | Try "Hey Bono" (hands-free) first. You should hear a beep when you press push-to-talk. `doctor` shows which microphone is used; virtual mics (phone-webcam apps, Stereo Mix) record silence. Pick your real mic in `setup` or set `F1E_MIC`. Check `logs/engine.log` for "PTT released ... level ... dBFS". |
 | Shift does something in the game | Choose another key in `setup` (or `F1E_PTT_KEY`), or use the controller button. |
 | Answers are generic / "offline" | No or invalid OpenAI key or no credit: `doctor`, then re-run `setup`. |
 | "UDP port 20777 is busy" | Another telemetry app (or a second engineer) is running. Close it. |
