@@ -207,7 +207,7 @@ def doctor() -> None:
     for m in ("tiny.en", "base.en"):
         print(f"[{ok((cfg.models_dir / 'whisper' / m / 'model.bin').exists())}] whisper {m}")
     env = _read_env()
-    print(f"[{ok(bool(env.get('OPENAI_API_KEY')))}] OPENAI_API_KEY in .env (optional; offline brain otherwise), "
+    print(f"[{'OK  ' if env.get('OPENAI_API_KEY') else 'INFO'}] OPENAI_API_KEY in .env (optional; offline brain otherwise), "
           f"model {env.get('OPENAI_MODEL', 'gpt-5.4-mini')}")
     try:
         import sounddevice as sd
@@ -228,7 +228,10 @@ def doctor() -> None:
     from f1engineer import gameconfig as G
     for p in G.find_configs():
         u = G.read_udp(p) or {}
-        print(f"[{ok(u.get('enabled') == 'true')}] {p.parent.parent.name} UDP {u}")
+        game = p.parent.parent.name
+        supported = u.get("format") in ("2020", None) or game in ("F1 2020", "F1 2021")
+        status = ok(u.get("enabled") == "true") if supported else "INFO"
+        print(f"[{status}] {game} UDP {u}" + ("" if supported else "  (this game's packet format is not supported yet)"))
     for port, proto in ((cfg.udp_port, socket.SOCK_DGRAM), (cfg.web_port, socket.SOCK_STREAM)):
         s = socket.socket(socket.AF_INET, proto)
         try:
