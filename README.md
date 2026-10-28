@@ -139,7 +139,7 @@ your own laps: `uv run python tools/pick_model.py gpt-5.4-mini gpt-6-luna` (add 
 
 | How | Command |
 |---|---|
-| **Automatic** (recommended) | `uv run f1engineer autostart on|off` | Start/stop the background watcher at login (Windows, Linux, macOS) |`, then just launch the game. The engineer starts with it and stops 45 s after it closes. |
+| **Automatic** (recommended) | `uv run f1engineer autostart on`, then just launch the game. The engineer starts with it and stops 45 s after it closes. |
 | Manual | `uv run f1engineer run`, then start the game. Opens the dashboard in your browser. |
 | Review laps / chat without the game | `uv run f1engineer dashboard` |
 
@@ -169,7 +169,7 @@ opens and closes. Things to try:
 | `uv run f1engineer doctor` | Health check: dependencies, models, key, microphone, GPU, game config, ports, autostart |
 | `uv run f1engineer run` | Start the engineer now (telemetry + radio + dashboard) |
 | `uv run f1engineer dashboard` | Review stored laps and chat, no game needed (hands over to the live engineer if the game starts) |
-| `uv run f1engineer autostart on|off` | Start/stop the background watcher at login (Windows, Linux, macOS) |\|off` | Start/stop the background watcher at Windows logon |
+| `uv run f1engineer autostart on\|off` | Start/stop the background watcher at login (Windows, Linux, macOS) |
 | `uv run f1engineer watch [--detach]` | Run the watcher yourself |
 | `uv run f1engineer udp [show\|enable\|restore]` | Inspect, enable or restore the game's telemetry config |
 | `uv run f1engineer record` | Record raw telemetry to `data/captures/*.f1cap` |
