@@ -59,7 +59,7 @@ def main() -> None:
     cfg = Config()
     env = _read_env()
     free = shutil.disk_usage(ROOT).free / 1e9
-    print(f"Disk: {free:.1f} GB free (models need ~0.4 GB; we always keep {cfg.min_free_disk_gb} GB free).")
+    print(f"Disk: {free:.1f} GB free (speech models need ~0.7 GB; we always keep {cfg.min_free_disk_gb} GB free).")
 
     # 1. game telemetry
     print("\n[1/6] Game telemetry (UDP)")
@@ -114,6 +114,16 @@ def main() -> None:
     env["F1E_PTT_BUTTON"] = _ask("  Push-to-talk controller button (A,B,X,Y,LB,RB,LS,RS,VIEW,DPAD_*) - pick one you\n"
                                  "  don't use for driving", env.get("F1E_PTT_BUTTON", "RS"))
     env["F1E_GPU"] = "auto" if _yes("  Use the GPU for speech recognition when it's free?", env.get("F1E_GPU", "auto") == "auto") else "off"
+    print("  Speech recognition:
+"
+          "    1. Local (default): Whisper on this PC, private, ~0.2 s on a free GPU (~1.5 s on CPU)
+"
+          "    2. OpenAI cloud: most accurate in a noisy room (mic hearing the game), ~1-2 s, uses your API key")
+    cur = "2" if env.get("F1E_STT") == "openai" else "1"
+    pick = _ask("  Which?", cur)
+    env["F1E_STT"] = "openai" if pick == "2" and env.get("OPENAI_API_KEY") else "local"
+    if pick == "2" and not env.get("OPENAI_API_KEY"):
+        print("  No OpenAI key saved, so it stays local.")
     _write_env(env)
     print(f"  Saved to {ENV.name} (gitignored).")
 
