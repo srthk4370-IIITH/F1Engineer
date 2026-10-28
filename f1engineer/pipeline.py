@@ -14,6 +14,8 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+from f1engineer import quick
+
 ACK_AFTER_S = 1.2
 FIRST_SENTENCE_TIMEOUT_S = 25
 STALE_S = 60
@@ -26,6 +28,7 @@ class Question:
         self.asked = time.time()
         self.q: queue.Queue = queue.Queue()
         self.answer = ""
+        self.source = "ai"
         self.done = threading.Event()
 
 
@@ -57,6 +60,11 @@ class AskPipeline:
 
     def _generate(self, q: Question, history: list) -> None:
         try:
+            fast = quick.answer(self.eng, q.text)   # plain data question: read it off the screen, no AI
+            if fast:
+                q.source = "instant"
+                q.q.put(fast)
+                return
             for s in self.eng.agent.ask(q.text, mode=q.mode, remember=False, history=history):
                 q.q.put(s)
         except Exception as e:
@@ -91,7 +99,7 @@ class AskPipeline:
                         break
                     if not out:
                         print(f"[ask] '{q.text}' -> first sentence in {time.time() - q.asked:.2f}s "
-                              f"({type(self.eng.agent.provider).__name__}, {q.mode})")
+                              f"({q.source if q.source == 'instant' else type(self.eng.agent.provider).__name__}, {q.mode})")
                     out.append(s)
                     self.eng._say(s, 1)
             finally:

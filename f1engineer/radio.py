@@ -81,7 +81,7 @@ WEATHER_SAY = {0: "dry", 1: "dry, bit of cloud", 2: "overcast but dry", 3: "ligh
 def radio_check(tr, compound: str, best: float | None) -> str:
     """Opening call built from the session: conditions, tyres, the target."""
     s = tr.session
-    temps = f"track {int(s.get('trackTemperature', 0))}, air {int(s.get('airTemperature', 0))}"
+    temps = f"Track {int(s.get('trackTemperature', 0))}, air {int(s.get('airTemperature', 0))}"
     wx = WEATHER_SAY.get(s.get("weather", 0), "dry")
     rain = next((f["offset_min"] for f in s.get("forecast", []) if f.get("weather") in ("light rain", "heavy rain", "storm")
                  and f.get("offset_min", 0) > 0), None)

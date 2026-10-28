@@ -13,6 +13,7 @@ import numpy as np
 from f1engineer import adapt, brain, radio
 from f1engineer.coaching import LiveCoach
 from f1engineer.race import RaceEngineer
+from f1engineer.insight import Patterns
 from f1engineer.pipeline import AskPipeline
 from f1engineer.analysis import coach, lapmath as LM, setup_advisor, strategy
 from f1engineer.config import Config
@@ -67,7 +68,10 @@ class Engine:
         self.listeners: list = []  # callables(event: dict) for the dashboard websocket
         self.coach = LiveCoach(self)
         self.race_eng = RaceEngineer(self)
+        self.patterns = Patterns(self)
         self._tips_said: set[str] = set()
+        self._debrief_pending: int | None = None
+        self.gap_hist: deque = deque(maxlen=10)
         self._recent_radio: deque[str] = deque(maxlen=20)
         self._last_strategist = 0.0
         self.pipeline = AskPipeline(self)
@@ -174,6 +178,7 @@ class Engine:
         self.sched.clear()
         self.coach = LiveCoach(self)
         self.race_eng = RaceEngineer(self)
+        self.patterns = Patterns(self)
         self._unanalysed = None   # (the conversation itself carries on across sessions, like a real engineer)
         self._first_review = None
         self._bg_put(self.store.start_session, tr.session_uid, tr.track, tr.session_type, tr.packet_format)
@@ -243,9 +248,13 @@ class Engine:
             st = tr.status[lap.car_idx] if tr.status else {}
             self.tyres.on_lap(lap.lap_num, st)
             self.race = strategy.race_snapshot(tr, self.gaps, self.tyres)
+            a_, b_ = self.race.get("ahead") or {}, self.race.get("behind") or {}
+            self.gap_hist.append({"lap": lap.lap_num, "ahead": a_.get("gap_s"), "ahead_name": a_.get("name"),
+                                  "behind": b_.get("gap_s"), "behind_name": b_.get("name")})
             self.sched.push([radio.race_lap_message(self.race, lap.lap_time)])
             self._bg_put(self.race_eng.on_lap, lap.lap_num, self.race)           # pit window (strategy sim)
-            self._strategist(f"lap {lap.lap_num} of {tr.session.get('totalLaps')} completed, P{self.race.get('position')}")
+            if lap.lap_num % 2 == 0:
+                self._strategist(f"lap {lap.lap_num} of {tr.session.get('totalLaps')} completed, P{self.race.get('position')}")
             self._bg_put(self.store.save_race_lap, tr.session_uid, lap.lap_num, lap.lap_time, self.race)
         if lap.complete:
             try:
@@ -270,6 +279,10 @@ class Engine:
         self.advice = setup_advisor.advise(self.reports[-5:], tr.setup, self.input_device, lap.assists)
         self.adapt = adapt.profile(self)
         is_best = lap.lap_time < self.ref["time"] and (not lap.invalid or "best" in self.ref["label"])
+        if not self.coach.was_out_lap(lap.lap_num):   # patterns across laps: recurring corners, pace vs tyres/fuel
+            st = tr.status[tr.player_idx] if tr.status and tr.status[tr.player_idx] else {}
+            wear = float(np.mean(st.get("tyresWear") or [0])) if st else None
+            self.sched.push(self.patterns.on_report(rep, wear))
         if self.coach.was_out_lap(lap.lap_num):
             self._say(f"Out lap done, {radio.fmt_t(lap.lap_time)}. Tyres are in, now we push.", 3)
         elif tr.is_time_trial or not tr.is_race:
@@ -278,14 +291,16 @@ class Engine:
             self.sched.push([radio.Message(6, radio.CLOCK(), radio.lap_debrief_text(rep, self.advice),
                                            "garage", 900, "garage_debrief")])
             if not isinstance(self.agent.provider, MockProvider):
-                threading.Thread(target=self._ai_debrief, args=(rep.lap_num,), daemon=True).start()
+                self._debrief_pending = rep.lap_num        # written by the AI only if/when the car is parked
+            if not isinstance(self.agent.provider, MockProvider) and (abs(rep.delta) > 0.3 or len(self.reports) % 3 == 1):
                 self._strategist(f"lap {rep.lap_num} analysed ({radio.short_t(rep.lap_time)}, {rep.delta:+.2f} vs "
                                  f"{rep.ref_label}): give the single most useful coaching call for the next lap "
                                  "(look at the lap report, corner history and style)", replace_key="focus")
         return rep
 
-    def _ai_debrief(self, lap_num: int) -> None:
-        """The model writes the garage debrief (progress, priorities, a drill); the template stays as a fallback."""
+    def _ai_debrief(self, lap_num: int, fallback: radio.Message | None = None) -> None:
+        """The model writes the garage debrief (progress, priorities, a drill); the template is the fallback."""
+        text = ""
         try:
             a = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=self.agent.provider,
                       profile_fn=self.profile.summary)
@@ -293,10 +308,12 @@ class Engine:
                 f"(Engineer's own garage debrief, not a driver question.) Debrief lap {lap_num} for when I'm back in the "
                 "garage: how it compared, whether I'm improving this session, the one or two things to fix next and how, "
                 "and a setup thought only if the data supports it. Under seven sentences.", mode="garage", remember=False))
-            if text and any(m.key == "garage_debrief" for m in self.sched.queue):
-                self.sched.push([radio.Message(6, radio.CLOCK(), text, "garage", 900, "garage_debrief")])
         except Exception as e:
             print(f"[engine] AI debrief failed: {e!r}")
+        if text:
+            self.sched.push([radio.Message(6, radio.CLOCK(), text, "garage", 900, "garage_debrief")])
+        elif fallback is not None:
+            self.sched.push([fallback])
 
     def _summarise(self, lap, rep) -> None:
         """Long-term memory row for this lap: style numbers + per-corner losses (for progress/style questions)."""
@@ -426,6 +443,13 @@ class Engine:
             return
         c = {"paused": True} if quiet else self.ctx()
         c["talking"] = self.pipeline.busy
+        parked = bool(c.get("paused") or c.get("in_garage"))
+        if parked and self._debrief_pending and not self.pipeline.busy:
+            lap_num, self._debrief_pending = self._debrief_pending, None
+            held = next((m for m in self.sched.queue if m.key == "garage_debrief"), None)
+            if held:
+                self.sched.queue.remove(held)      # hold the template while the AI writes the real debrief
+            threading.Thread(target=self._ai_debrief, args=(lap_num, held), daemon=True).start()
         self.sched.tick(c)
         if quiet:
             return
@@ -505,6 +529,7 @@ class Engine:
                                               for c in near if not c.get("me"))
             if self.reports:
                 r = self.reports[-1]
+                s += "; pit wall noticed: " + self.patterns.summary()
                 s += f"; last analysed lap {r.lap_num}: top losses " + ", ".join(
                     f"{c['corner']} +{c['time_loss']:.2f} ({', '.join(c['causes'][:2])})" for c in r.losses[:3])
         except Exception as e:

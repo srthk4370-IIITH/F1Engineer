@@ -247,7 +247,7 @@ class MockProvider:
                 return f"Lap {d['lap_time']}, nothing major lost. Clean."
             c = d["losses"][0]
             return (f"Biggest loss is {c['corner']}, {c['time_loss']:.2f}. "
-                    f"{(c['causes'] or ['slower there'])[0].capitalize()}. Be a man, brake later.")
+                    f"{(c['causes'] or ['slower there'])[0].capitalize()}.")
         if "laps" in d and "corner" in d:
             last = d["laps"][-1]
             cause = (last["causes"] or ["nothing obvious"])[0]

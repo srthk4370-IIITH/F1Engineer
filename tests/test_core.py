@@ -311,3 +311,41 @@ def test_pipeline_answers_in_order_and_dedupes():
         x.join(10)
     answers = [s for s in said if s.startswith("Answer")]
     assert answers == ["Answer to one.", "Answer to two.", "Answer to three."]
+
+
+def test_quick_answers_route_data_questions_without_ai():
+    from f1engineer import quick
+    assert quick.REASONING.search("why am i slow in stowe") and quick.REASONING.search("should i pit now")
+    route = lambda q: next((n for n, rx in quick.INTENTS if rx.search(q.lower())), None)  # noqa: E731
+    assert route("What are my tyre temps?") == "temps" and route("Brake temps?") == "brakes"
+    assert route("Gap ahead?") == "gap_ahead" and route("How many laps left?") == "laps"
+    assert route("Radio check") == "radio_check" and route("Who am I racing?") == "racing"
+
+
+def test_patterns_one_off_quiet_recurring_called_fixed_praised_and_tyre_trend():
+    from types import SimpleNamespace as NS
+    from f1engineer.insight import Patterns
+    eng = NS(adapt={"loss_call_s": 0.25}, tr=NS(is_race=False))
+    p = Patterns(eng)
+
+    def rep(n, t1_loss, lap_time=90.0):
+        return NS(lap_num=n, lap_time=lap_time, valid=True,
+                  corners=[{"corner": "Turn 1", "time_loss": t1_loss, "causes": ["braked 15 m earlier"]},
+                           {"corner": "Turn 2", "time_loss": 0.0, "causes": []}])
+    said = lambda msgs: " ".join(m.text for m in msgs)  # noqa: E731
+    assert "Turn 1" not in said(p.on_report(rep(1, 0.4), 10))       # one bad lap: noise
+    assert "Turn 1" not in said(p.on_report(rep(2, 0.02), 12))
+    p.on_report(rep(3, 0.3), 14)
+    p.on_report(rep(4, 0.3), 16)
+    out = said(p.on_report(rep(5, 0.35), 18))                          # three laps running: call it, with the cause
+    assert "Turn 1" in out and "braked 15 m earlier" in out
+    assert "Turn 1" not in said(p.on_report(rep(6, 0.4), 20))          # said once, not nagged
+    p.on_report(rep(7, 0.0), 22)
+    fixed = said(p.on_report(rep(8, 0.0), 24)).lower()                # two clean laps after the call: praise
+    assert any(w in fixed for w in ("sorted", "better", "fixed"))
+
+    q = Patterns(NS(adapt={}, tr=NS(is_race=False)))
+    msgs = []
+    for n, (t, w) in enumerate([(90.0, 30), (90.2, 35), (90.4, 40), (90.6, 46)], 1):   # slower as tyres wear
+        msgs += q.on_report(NS(lap_num=n, lap_time=t, valid=True, corners=[]), w)
+    assert "tyre" in said(msgs).lower()                                # blamed on the tyres, not the driver
