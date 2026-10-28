@@ -31,6 +31,7 @@ class Lap:
     complete: bool = False
     assists: dict = field(default_factory=dict)
     compound: str = ""
+    tyre_age: int = 0
     started_wall: float = field(default_factory=time.time)
     arrays: dict[str, np.ndarray] | None = None
 
@@ -318,6 +319,7 @@ class SessionTracker:
         st = self.status[idx] if self.status and self.status[idx] else {}
         lap.assists = {"tc": st.get("tractionControl"), "abs": st.get("antiLockBrakes")}
         lap.compound = P.VISUAL_COMPOUND.get(st.get("visualTyreCompound", 0), "")
+        lap.tyre_age = int(st.get("tyresAgeLaps") or 0)
         return lap
 
     def _complete_lap(self, c: CarTracker, L) -> None:

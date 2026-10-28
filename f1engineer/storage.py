@@ -47,8 +47,10 @@ class Storage:
         (self.root / "reference").mkdir(exist_ok=True)
         self.db = sqlite3.connect(self.root / "f1engineer.db", check_same_thread=False)
         self.db.executescript(SCHEMA)
-        if "sectors" not in [r[1] for r in self.db.execute("PRAGMA table_info(laps)")]:
-            self.db.execute("ALTER TABLE laps ADD COLUMN sectors TEXT")  # added after the first release
+        cols = [r[1] for r in self.db.execute("PRAGMA table_info(laps)")]
+        for col, typ in (("sectors", "TEXT"), ("compound", "TEXT"), ("tyre_age", "INTEGER")):   # added after release 1
+            if col not in cols:
+                self.db.execute(f"ALTER TABLE laps ADD COLUMN {col} {typ}")
         self.session_clock: float | None = None  # importer: date sessions by the recording, not by now
         self.lock = threading.Lock()
 
@@ -134,11 +136,12 @@ class Storage:
         with self.lock:
             cur = self.db.execute(
                 "INSERT INTO laps(session_uid,car_idx,car_name,lap_num,lap_time,valid,input_device,assists,report,trace,created,"
-                "sectors) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "sectors,compound,tyre_age) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (str(uid), lap.car_idx, car_name, lap.lap_num, lap.lap_time, int(not lap.invalid), input_device,
                  json.dumps(lap.assists), json.dumps(report, default=str) if report else None,
                  str(trace.relative_to(self.root)), self.session_clock or time.time(),
-                 json.dumps([int(x) for x in lap.sector_ms]) if any(lap.sector_ms) else None))
+                 json.dumps([int(x) for x in lap.sector_ms]) if any(lap.sector_ms) else None,
+                 getattr(lap, "compound", "") or None, getattr(lap, "tyre_age", None)))
             self.db.commit()
             return cur.lastrowid
 
@@ -179,13 +182,16 @@ class Storage:
         with self.lock:
             rows = self.db.execute(
                 "SELECT l.id,l.session_uid,s.track,s.type,l.car_idx,l.car_name,l.lap_num,l.lap_time,l.valid,l.input_device,"
-                "l.assists,l.created,l.sectors FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid "
+                "l.assists,l.created,l.sectors,l.compound,l.tyre_age,json_extract(l.report,'$.compound') "
+                "FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid "
                 "ORDER BY s.started DESC, l.id DESC LIMIT 300").fetchall()
         keys = ("id", "session", "track", "type", "car_idx", "car", "lap", "lap_time", "valid", "input", "assists", "created",
-                "sectors")
+                "sectors", "compound", "tyre_age", "report_compound")
         out = [dict(zip(keys, r)) for r in rows]
         for d in out:
             d["sectors"] = json.loads(d["sectors"]) if d["sectors"] else None
+            from_report = d.pop("report_compound")
+            d["compound"] = d["compound"] or from_report or None   # older laps: compound from their report
         return out
 
     def was_imported(self, path: Path) -> bool:
@@ -202,12 +208,15 @@ class Storage:
         with self.lock:
             r = self.db.execute(
                 "SELECT l.report, l.trace, l.lap_time, l.car_name, l.lap_num, s.track, l.session_uid, l.valid, l.input_device,"
-                " l.assists FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid WHERE l.id=?", (lap_id,)).fetchone()
+                " l.assists, l.compound, l.tyre_age, l.sectors FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid"
+                " WHERE l.id=?", (lap_id,)).fetchone()
         if not r:
             return None
         return {"report": json.loads(r[0]) if r[0] else None, "trace": r[1], "lap_time": r[2], "car": r[3], "lap": r[4],
                 "track": r[5], "session": r[6], "valid": bool(r[7]), "input": r[8],
-                "assists": json.loads(r[9]) if r[9] else {}}
+                "assists": json.loads(r[9]) if r[9] else {},
+                "compound": r[10] or ((json.loads(r[0]) or {}).get("compound") if r[0] else None), "tyre_age": r[11],
+                "sectors": json.loads(r[12]) if r[12] else None}
 
     def load_trace(self, rel: str) -> dict[str, np.ndarray]:
         with np.load(self.root / rel) as z:

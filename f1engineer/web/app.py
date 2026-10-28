@@ -95,6 +95,10 @@ def create_app(engine) -> FastAPI:
     def laps():
         return engine.store.list_laps()
 
+    @app.get("/api/race/{session}")
+    def race(session: str):
+        return engine.store.race_log(session)
+
     @app.get("/api/radio")
     def radio_log():
         return engine.store.radio_log()

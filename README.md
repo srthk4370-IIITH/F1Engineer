@@ -35,9 +35,10 @@ Telemetry analysis, speech recognition and the voice run locally on your PC; the
 - Ask several things in a row: answers are worked out in parallel and come back one by one in the order you asked; a double press is merged, nothing goes silent (instant "Checking.", hard timeouts).
 
 **Dashboard** (`http://127.0.0.1:8020`, also works without the game running)
-- Live: delta, speed, gear, revs, pedals, tyre temps and wear, fuel, ERS, last-lap corner table, engineer suggestions.
-- Telemetry review of your last 5 sessions: compare any two laps with synced charts (delta, speed with corner names, throttle, brake, gear, RPM, steering, lateral and longitudinal G, wheel slip, DRS), drag to zoom, track map coloured by speed / gear / pedals / who's faster, mini-sectors, corner table (apex speed, brake point, gear, throttle-on), G-G diagram, lap-time progression, time per corner, braking points, gear usage, speed distribution, sector times with F1 colours and your ideal lap.
-- Chat with the engineer.
+- **Telemetry:** overlay up to three laps of the same track (other tracks are locked out; laps from different sessions on the same track are fine). Lap summary table (time, gap, sectors, tyre, top/min/avg speed, full throttle, braking, coasting, shifts, peak G), mini-sectors coloured by the fastest lap, synced traces (gap to fastest, speed with corner names, throttle, brake, gear, RPM, steering, lateral and longitudinal G) with drag-zoom, a correctly oriented track map (speed / gear / pedals / who's fastest where) with live scrub dots, corner table, G-G diagram and the engineer's notes.
+- **Timing:** F1-style lap table with purple/green/yellow sectors, tyre compound and age, gap to best, deleted laps and the ideal lap; lap-time progression with tyre markers; a mini-sector grid for every lap.
+- **Race:** position, gaps to the cars ahead and behind, lap times, tyre stints and wear, lap by lap.
+- **Live** car and timing data, and **Engineer** chat. Colours are colour-blind validated; every tyre badge carries its letter too.
 
 **It knows how you drive:** detects keyboard vs controller from the telemetry, reads your TC/ABS assists, and adapts the advice.
 

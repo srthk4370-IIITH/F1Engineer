@@ -5,126 +5,150 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>F1 Engineer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700;900&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&family=Saira+Semi+Condensed:wght@500;600;700;800&display=swap">
 <link rel="stylesheet" href="/static/vendor/uPlot.min.css">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-<header>
-  <div class="brand"><span class="stripe"></span>F1 <b>ENGINEER</b></div>
-  <div class="status"><span id="dot" class="dot"></span><span id="conn">offline</span></div>
-  <span class="chip">Game <b id="h-game">-</b></span>
-  <span class="chip">Track <b id="h-track">-</b></span>
-  <span class="chip">Mode <b id="h-mode">-</b></span>
-  <span class="chip">Input <b id="h-input">-</b></span>
-  <span class="chip">Ref <b id="h-ref">-</b></span>
-  <nav>
-    <button data-tab="review">Telemetry</button>
+<header class="top">
+  <div class="brand"><i class="slash"></i><span>F1</span><b>ENGINEER</b></div>
+  <div class="ctx">
+    <span class="pill" id="conn"><i id="dot" class="dot"></i><span id="conn-t">offline</span></span>
+    <span class="kv"><small>Game</small><b id="h-game">-</b></span>
+    <span class="kv"><small>Track</small><b id="h-track">-</b></span>
+    <span class="kv"><small>Session</small><b id="h-mode">-</b></span>
+    <span class="kv"><small>Input</small><b id="h-input">-</b></span>
+  </div>
+  <nav id="tabs">
+    <button data-tab="telemetry">Telemetry</button>
+    <button data-tab="timing">Timing</button>
+    <button data-tab="race">Race</button>
     <button data-tab="live">Live</button>
-    <button data-tab="radio">Engineer</button>
+    <button data-tab="engineer">Engineer</button>
   </nav>
 </header>
 
 <main>
-  <!-- ===================== REVIEW ===================== -->
-  <section id="tab-review" class="review hidden">
-    <aside class="sidebar">
-      <div class="side-head">Laps <span class="muted">last 5 sessions</span></div>
-      <div id="importing" class="importing hidden"></div>
-      <div class="hint">Click a lap = <span class="cA">A</span> · Shift-click or the B button = <span class="cB">B</span></div>
-      <div id="lapgroups"></div>
-    </aside>
+  <div id="importing" class="banner hidden"></div>
 
-    <div class="workspace">
-      <div class="cmpbar">
-        <div class="lapchip A" id="chipA"><span class="tag">A</span><span class="nm">pick a lap</span></div>
-        <div class="gap" id="gap"></div>
-        <div class="lapchip B" id="chipB"><span class="tag">B</span><span class="nm">compare with...</span></div>
-        <div class="actions">
-          <button id="btnBest" title="Compare lap A with the fastest lap of the session">vs fastest</button>
-          <button id="btnSwap" title="Swap A and B">swap</button>
-          <button id="btnClearB" title="Show lap A alone">clear B</button>
-          <button id="btnReset" title="Reset zoom (or double-click a chart)">reset zoom</button>
+  <!-- ============ TELEMETRY: multi-lap comparison ============ -->
+  <section id="tab-telemetry" class="hidden">
+    <div class="tele">
+      <aside class="laps-panel">
+        <div class="panel-h">Laps <small>pick up to 3 on the same track</small></div>
+        <div id="lapgroups" class="lapgroups"></div>
+      </aside>
+      <div class="tele-main">
+        <div id="cmpbar" class="cmpbar"></div>
+        <div id="tele-empty" class="empty">
+          <h2>Pick a lap</h2>
+          <p>Choose up to three laps on the left to overlay them. The fastest one is the baseline for the delta.</p>
         </div>
-      </div>
-
-      <div id="empty" class="empty">
-        <h2>No lap selected</h2>
-        <p>Pick a lap on the left. Shift-click a second lap to compare them corner by corner.</p>
-        <p class="muted">No laps yet? Drive with the game running, or import a recording:
-          <code>uv run f1engineer import</code></p>
-      </div>
-
-      <div id="content" class="hidden">
-        <div class="stats" id="stats"></div>
-        <div class="minisectors" id="minis"></div>
-        <div class="split">
-          <div class="charts" id="charts"></div>
-          <div class="rightcol">
-            <div class="panel">
-              <div class="ph">Track map <span class="seg" id="mapmode"><button data-m="speed" class="on">Speed</button><button data-m="gear">Gear</button><button data-m="pedals">Pedals</button><button data-m="delta">Δ</button></span></div>
-              <div class="muted maplegend" id="maplegend"></div>
-              <canvas id="map"></canvas>
-              <div class="readout" id="readout"></div>
+        <div id="tele-content" class="hidden">
+          <div class="card">
+            <div class="card-h">Lap summary</div>
+            <div class="tablewrap"><table id="summary" class="grid-table"></table></div>
+          </div>
+          <div class="card">
+            <div class="card-h">Mini-sectors <small id="minis-note">fastest lap per segment</small></div>
+            <div id="minis" class="minis"></div>
+          </div>
+          <div class="tele-grid">
+            <div class="card charts-card">
+              <div class="card-h">Telemetry <small>hover to scrub · drag to zoom · double-click to reset</small>
+                <span class="legend" id="legend"></span></div>
+              <div id="charts"></div>
             </div>
-            <div class="panel">
-              <div class="ph">Corners <span class="muted">click to zoom</span></div>
-              <div class="tablewrap"><table class="corners" id="corners"></table></div>
-            </div>
-            <div class="panel">
-              <div class="ph">G-G diagram <span class="muted">grip used: lateral vs braking/acceleration</span></div>
-              <canvas id="gg" class="sq"></canvas>
-            </div>
-            <div class="panel" id="reportpanel">
-              <div class="ph">Engineer's notes <span class="muted">lap A vs reference</span></div>
-              <div id="notes" class="notes"></div>
+            <div class="side-col">
+              <div class="card">
+                <div class="card-h">Track <span class="seg" id="mapmode">
+                  <button data-m="speed" class="on">Speed</button><button data-m="gear">Gear</button>
+                  <button data-m="pedals">Pedals</button><button data-m="fastest">Fastest</button></span></div>
+                <canvas id="map"></canvas>
+                <div id="maplegend" class="maplegend"></div>
+                <div id="readout" class="readout"></div>
+              </div>
+              <div class="card">
+                <div class="card-h">Corners <small>click a row to zoom</small></div>
+                <div class="tablewrap"><table id="corners" class="grid-table corners"></table></div>
+              </div>
+              <div class="card">
+                <div class="card-h">G-G <small>grip used</small></div>
+                <canvas id="gg" class="sq"></canvas>
+              </div>
+              <div class="card" id="notes-card">
+                <div class="card-h">Engineer's notes <small id="notes-for"></small></div>
+                <div id="notes" class="notes"></div>
+              </div>
             </div>
           </div>
         </div>
-
-        <div class="sectionhead">Analysis</div>
-        <div class="analysis">
-          <div class="panel"><div class="ph">Lap times <span class="muted">this session · purple = fastest</span></div><canvas id="c-laps" data-h="200"></canvas></div>
-          <div class="panel"><div class="ph">Time by corner <span class="muted" id="cdl-sub"></span></div><canvas id="c-cdelta" data-h="260"></canvas></div>
-          <div class="panel"><div class="ph">Minimum (apex) speed <span class="muted">km/h</span></div><canvas id="c-apex" data-h="260"></canvas></div>
-          <div class="panel"><div class="ph">Braking point <span class="muted">metres before apex</span></div><canvas id="c-brake" data-h="260"></canvas></div>
-          <div class="panel"><div class="ph">Gear usage <span class="muted">% of lap distance</span></div><canvas id="c-gears" data-h="200"></canvas></div>
-          <div class="panel"><div class="ph">Speed distribution <span class="muted">% of lap time per 20 km/h band</span></div><canvas id="c-speedhist" data-h="200"></canvas></div>
-          <div class="panel"><div class="ph">Pedal phases <span class="muted">% of lap time</span></div><canvas id="c-phases" data-h="200"></canvas></div>
-          <div class="panel"><div class="ph">Sectors <span class="muted">purple = session best</span></div><div id="sectors" class="tablewrap"></div></div>
-        </div>
       </div>
     </div>
   </section>
 
-  <!-- ===================== LIVE ===================== -->
-  <section id="tab-live" class="hidden">
-    <div id="liveoff" class="empty hidden"><h2>Engineer offline</h2>
-      <p>Live data appears when F1 is running (the engineer starts with the game). Meanwhile, review your laps under <b>Telemetry</b>.</p></div>
-    <div class="grid">
-      <div class="panel"><div class="ph">Delta to reference</div><div id="delta" class="big">-</div><div class="muted" id="lapinfo">waiting for the game...</div></div>
-      <div class="panel"><div class="ph">Car</div>
-        <div class="carline"><div><span class="big" id="speed">0</span> <span class="muted">km/h</span></div><div class="gearbox" id="gear">N</div></div>
-        <div class="revbar"><div id="rev"></div></div>
-        <div class="muted">Throttle</div><div class="bar"><div id="thr" class="thr"></div></div>
-        <div class="muted">Brake</div><div class="bar"><div id="brk" class="brk"></div></div></div>
-      <div class="panel"><div class="ph">Tyres <span id="compound" class="muted"></span></div><div class="tyres" id="tyres"></div></div>
-      <div class="panel"><div class="ph">Energy</div><div>Fuel margin <b id="fuel">-</b> laps</div><div>ERS <b id="ers">-</b>%</div>
-        <div class="muted" style="margin-top:6px">Assists: TC <b id="tc">-</b> · ABS <b id="abs">-</b></div>
-        <div id="racebox" class="muted" style="margin-top:6px"></div></div>
+  <!-- ============ TIMING ============ -->
+  <section id="tab-timing" class="hidden">
+    <div class="toolbar"><label>Session <select id="timing-session"></select></label></div>
+    <div class="timing-grid">
+      <div class="card">
+        <div class="card-h">Lap times <small>purple = session best · green = personal improvement</small></div>
+        <div class="tablewrap"><table id="timing" class="grid-table timing"></table></div>
+      </div>
+      <div class="card">
+        <div class="card-h">Lap time progression <small>marker = tyre</small></div>
+        <canvas id="c-laps" data-h="230"></canvas>
+      </div>
     </div>
-    <div class="grid wide">
-      <div class="panel"><div class="ph">Last lap: where the time went</div><div id="report" class="tablewrap muted">No analysed lap yet. Set a reference lap, then drive another.</div></div>
-      <div class="panel"><div class="ph">Engineer suggestions</div><ul id="advice" class="advice muted"><li>Drive a few laps.</li></ul></div>
-      <div class="panel"><div class="ph">Radio</div><div id="radio-live" class="radio"></div></div>
+    <div class="card">
+      <div class="card-h">Mini-sectors <small id="ms-note">segment times, purple = best of the session</small></div>
+      <div class="tablewrap"><table id="minisectors" class="grid-table ms"></table></div>
     </div>
   </section>
 
-  <!-- ===================== RADIO ===================== -->
-  <section id="tab-radio" class="hidden">
-    <div class="panel"><div class="ph">Talk to your engineer</div><div id="radio-all" class="radio tall"></div>
-      <form class="chat" id="chatform"><input id="q" placeholder="Talk to him: Am I improving? What is my driving style? Will a one-stop on lap 4 work? Remember my goal is..." autocomplete="off"><button>Send</button></form>
-      <div class="muted" style="margin-top:6px">In the car: hold Shift (keyboard) or your push-to-talk controller button.</div></div>
+  <!-- ============ RACE ============ -->
+  <section id="tab-race" class="hidden">
+    <div class="toolbar"><label>Race <select id="race-session"></select></label></div>
+    <div id="race-empty" class="empty hidden"><h2>No race recorded yet</h2>
+      <p>Race sessions appear here with position, gaps, lap times and tyre stints lap by lap.</p></div>
+    <div id="race-content" class="race-grid">
+      <div class="card"><div class="card-h">Position</div><div id="r-pos"></div></div>
+      <div class="card"><div class="card-h">Gaps <small>to the cars ahead and behind, s</small></div><div id="r-gap"></div></div>
+      <div class="card"><div class="card-h">Lap times</div><div id="r-laps"></div></div>
+      <div class="card"><div class="card-h">Tyres <small>stints and wear</small></div><div id="r-stints"></div><div id="r-wear"></div></div>
+    </div>
+  </section>
+
+  <!-- ============ LIVE ============ -->
+  <section id="tab-live" class="hidden">
+    <div id="liveoff" class="empty hidden"><h2>Engineer offline</h2>
+      <p>Live data appears when the game is running. Meanwhile, review your laps under Telemetry.</p></div>
+    <div class="live-grid">
+      <div class="card hero"><div class="card-h">Delta</div><div id="delta" class="big">-</div><div id="lapinfo" class="sub">waiting for the game…</div></div>
+      <div class="card"><div class="card-h">Car</div>
+        <div class="carline"><div><span class="big" id="speed">0</span> <small>km/h</small></div><div class="gearbox" id="gear">N</div></div>
+        <div class="revbar"><div id="rev"></div></div>
+        <div class="pedal"><small>Throttle</small><div class="bar"><div id="thr" class="thr"></div></div></div>
+        <div class="pedal"><small>Brake</small><div class="bar"><div id="brk" class="brk"></div></div></div></div>
+      <div class="card"><div class="card-h">Tyres <small id="compound"></small></div><div class="tyres" id="tyres"></div></div>
+      <div class="card"><div class="card-h">Energy</div><div class="kvs">
+        <div><small>Fuel margin</small><b id="fuel">-</b></div><div><small>ERS</small><b id="ers">-</b></div>
+        <div><small>TC</small><b id="tc">-</b></div><div><small>ABS</small><b id="abs">-</b></div></div>
+        <div id="racebox" class="sub"></div></div>
+    </div>
+    <div class="live-grid wide">
+      <div class="card"><div class="card-h">Last lap</div><div id="report" class="tablewrap sub">No analysed lap yet.</div></div>
+      <div class="card"><div class="card-h">Suggestions</div><ul id="advice" class="advice sub"><li>Drive a few laps.</li></ul></div>
+      <div class="card"><div class="card-h">Radio</div><div id="radio-live" class="radio"></div></div>
+    </div>
+  </section>
+
+  <!-- ============ ENGINEER ============ -->
+  <section id="tab-engineer" class="hidden">
+    <div class="card chat-card"><div class="card-h">Talk to your engineer</div>
+      <div id="radio-all" class="radio tall"></div>
+      <form class="chat" id="chatform"><input id="q" placeholder="Am I improving? What setup should I change? Debrief my last lap…" autocomplete="off"><button>Send</button></form>
+      <div class="sub">In the car: say "Hey Bono" or hold Shift / right-stick.</div></div>
   </section>
 </main>
 <script src="/static/vendor/uPlot.iife.min.js"></script>
