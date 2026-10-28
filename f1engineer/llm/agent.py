@@ -36,6 +36,8 @@ How you talk (current mode: {mode}):
 - radio: the driver is on track at speed. One or two short sentences: number first, then the instruction.
 - garage: the car is parked or paused. A real conversation is fine: up to about six sentences, natural and engaging.
 - review: the driver is on the dashboard away from the game. Conversational and thorough, up to about eight sentences.
+- strategist: nobody asked; you are deciding on your own whether to call the driver. Investigate with tools first,
+  then either reply exactly SILENT or give one radio call of at most two short sentences.
 - Plain spoken English for text-to-speech: no markdown, no lists, no emojis; numbers said naturally.
 - Personality: calm, direct British pit-wall pro ("Copy.", "Understood.") with dry humour, sass level {sass}/3
   (0 = none). At sass 2+ cheeky banter like "be a man, brake later" is fine, never during safety or strategy calls,
@@ -48,8 +50,9 @@ Live context: {context}"""
 
 MODES = {  # reasoning effort and answer budget per conversation mode
     "radio": {"effort": "none", "max_tokens": 350},
-    "garage": {"effort": "low", "max_tokens": 900},
+    "garage": {"effort": "none", "max_tokens": 900},   # speed first; strategist/review think longer
     "review": {"effort": "low", "max_tokens": 1200},
+    "strategist": {"effort": "low", "max_tokens": 400},   # the engineer's own unprompted calls
 }
 
 TOOL_SCHEMAS = [
@@ -84,6 +87,8 @@ TOOL_SCHEMAS = [
       "pit_loss_s": {"type": "number"}}),
     ("remember", "Save something about the driver for future sessions (goal, preference, recurring problem).",
      {"note": {"type": "string"}}),
+    ("get_race_history", "This race lap by lap: position, gaps ahead/behind, tyre compound, wear and temps, fuel, ERS, "
+     "safety car, weather. Use it to see trends (tyre deg, gap closing, position changes).", {}),
     ("get_stored_lap", "A stored lap's corner report from the database (works away from the game).",
      {"lap": {"type": "integer", "description": "lap number; omit for the latest"}}),
 ]
@@ -121,7 +126,7 @@ EFFORT_LADDER = ["none", "minimal", "low"]
 class OpenAIProvider:
     def __init__(self, model: str | None = None):
         from openai import OpenAI
-        self.client = OpenAI()
+        self.client = OpenAI(timeout=25.0, max_retries=1)   # never hang the radio
         self.model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
         effort = os.getenv("OPENAI_REASONING", "none")
         self._efforts = EFFORT_LADDER[EFFORT_LADDER.index(effort):] if effort in EFFORT_LADDER else [effort]
@@ -285,13 +290,14 @@ class Agent:
         self.provider = provider or make_provider()
         self.history: list[dict] = []
 
-    def ask(self, question: str, max_rounds: int = 4, mode: str = "radio", remember: bool = True) -> Iterator[str]:
+    def ask(self, question: str, max_rounds: int = 4, mode: str = "radio", remember: bool = True,
+            history: list | None = None) -> Iterator[str]:
         """Yield speakable sentences as soon as they are ready. mode: radio | garage | review."""
         t0 = time.perf_counter()
         m = MODES.get(mode, MODES["radio"])
         sys = {"role": "system", "content": SYSTEM_PROMPT.format(sass=self.sass, mode=mode, profile=self.profile_fn(),
                                                                  context=self.context_fn())}
-        msgs = [sys, *self.history[-12:], {"role": "user", "content": question}]
+        msgs = [sys, *(self.history if history is None else history)[-12:], {"role": "user", "content": question}]
         tools = openai_tools(set(self.tools))
         answer = ""
         for _ in range(max_rounds):

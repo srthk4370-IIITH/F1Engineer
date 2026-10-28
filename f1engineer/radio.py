@@ -7,25 +7,23 @@ import random
 import time
 from dataclasses import dataclass, field
 
-WORDS_PER_SEC = 2.7  # Piper at normal rate
+WORDS_PER_SEC = 3.4  # Piper at the default 1.3x speaking rate (engine sets it from the config)
 CLOCK = time.time  # replaced by replay/tests to run on capture time
 
-SASS = {
-    "loss": [
-        "Be a man, brake later.", "My nan carries more speed through there.", "Commit to it!",
-        "That corner owes you money now.", "You're driving it like a rental.", "Less hope, more throttle.",
-    ],
-    "lockup": ["Flat-spotting tyres isn't a strategy.", "We heard that lock-up from the pit wall.", "Smoke show. Nice. Now stop."],
-    "offtrack": ["The track's the grey bit, mate.", "Scenic route again?", "Grass doesn't count as a shortcut."],
-    "good": ["Look at you, actually driving.", "Who are you and what did you do with my driver?", "Lovely. Do it again."],
-    "slow_lap": ["Was that a reconnaissance lap?", "Warm-up's over, let's go racing.", "Somewhere a stopwatch is crying."],
+SASS = {   # rare, dry pit-wall humour (never on safety or strategy calls)
+    "loss": ["Be a man, brake later.", "You're better than that.", "Commit to it."],
+    "lockup": ["Easy on the tyres.", "We felt that one from here."],
+    "offtrack": ["Track's the grey bit.", "Keep it on the black stuff."],
+    "good": ["Lovely.", "That's more like it.", "Do that again."],
+    "slow_lap": [],
 }
 
 
 def sass(kind: str, level: int) -> str:
-    if level <= 0 or kind not in SASS:
+    """At most occasionally: real engineers joke rarely, and it lands better that way."""
+    if level <= 0 or not SASS.get(kind):
         return ""
-    return " " + random.choice(SASS[kind]) if random.random() < 0.25 * level + 0.15 else ""
+    return " " + random.choice(SASS[kind]) if random.random() < 0.08 * level else ""
 
 
 @dataclass(order=True)
@@ -66,43 +64,85 @@ def fmt_d(d: float) -> str:
 
 
 # ---- templates -------------------------------------------------------------
+# Written the way a pit wall talks: short, number first, no filler. One idea per call.
+def pick(*options: str) -> str:
+    return random.choice(options)
+
+
+def short_t(s: float) -> str:
+    """Lap time as said on the radio: '1:29.1' (tenths are enough out loud)."""
+    m, sec = divmod(s, 60)
+    return f"{int(m)}:{sec:04.1f}" if m else f"{sec:.1f}"
+
+
+WEATHER_SAY = {0: "dry", 1: "dry, bit of cloud", 2: "overcast but dry", 3: "light rain", 4: "heavy rain", 5: "storm"}
+
+
+def radio_check(tr, compound: str, best: float | None) -> str:
+    """Opening call built from the session: conditions, tyres, the target."""
+    s = tr.session
+    temps = f"track {int(s.get('trackTemperature', 0))}, air {int(s.get('airTemperature', 0))}"
+    wx = WEATHER_SAY.get(s.get("weather", 0), "dry")
+    rain = next((f["offset_min"] for f in s.get("forecast", []) if f.get("weather") in ("light rain", "heavy rain", "storm")
+                 and f.get("offset_min", 0) > 0), None)
+    tyre = f" {compound.capitalize()}s on." if compound else ""
+    rain_say = f" Rain possible in about {rain} minutes." if rain and s.get("weather", 0) < 3 else ""
+    if tr.is_time_trial:
+        target = (pick(f" Best here is {short_t(best)}, let's beat it.", f" Target's your {short_t(best)}.")
+                  if best else pick(" No time here yet, build up to it.", " First run here, take a couple of laps to find it."))
+        return f"Radio check. {temps}, {wx}.{tyre}{target}"
+    if tr.is_race:
+        laps = s.get("totalLaps")
+        grid = tr.lapdata[tr.player_idx]["gridPosition"] if tr.lapdata is not None else 0
+        start = f" Starting P{int(grid)}." if grid else ""
+        return f"Radio check. {laps} laps, {temps}, {wx}.{start}{tyre}{rain_say} Car's good."
+    if tr.session_type.startswith(("Q", "Short Q", "OSQ", "Sprint")):
+        return f"Radio check. {temps}, {wx}.{tyre}{rain_say} One clean lap, that's all we need."
+    return f"Radio check. {temps}, {wx}.{tyre}{rain_say} Let's get a feel for the car."
+
+
 def tt_lap_messages(rep, sass_level: int, is_best: bool) -> list[Message]:
     now = CLOCK()
-    msgs = []
-    if is_best and rep.valid:
-        head = f"Lap {fmt_t(rep.lap_time)}. New best."
-        if rep.ref_time and rep.delta < 0:
-            head += f" {fmt_d(rep.delta)} up on {rep.ref_label}."
-        head += sass("good", sass_level)
+    t = short_t(rep.lap_time)
+    top = next((c for c in rep.losses if c["time_loss"] >= 0.15), None)
+    where = f" Most of it in {top['corner']}." if top and rep.delta > 0.15 else ""
+    if not rep.valid and rep.delta < 0:
+        head = pick(f"{t}, but it's deleted. Track limits. Would've been {fmt_d(rep.delta)} quicker.",
+                    f"Lap deleted, track limits. Shame, {t} was {fmt_d(rep.delta)} up.")
+    elif is_best:
+        head = pick(f"{t}, new best. {fmt_d(rep.delta).capitalize()} quicker.", f"Purple. {t}, {fmt_d(rep.delta)} up.",
+                    f"That's a {t}, best of the day by {fmt_d(rep.delta)}.") + sass("good", sass_level)
+    elif rep.delta > 2:
+        head = pick(f"{t}. That one got away from you. Reset and go again.", f"{t}, {fmt_d(rep.delta)} off. Messy one, go again.")
+    elif abs(rep.delta) < 0.05:
+        head = f"{t}, right on your best."
     else:
-        head = f"Lap {fmt_t(rep.lap_time)}, {fmt_d(rep.delta)} {'down on' if rep.delta > 0 else 'up on'} {rep.ref_label}."
-        if rep.delta > 2:
-            head += sass("slow_lap", sass_level)
-    if not rep.valid:
-        head += " Invalid though, track limits." if rep.delta < 0 else " And it's invalid."
-    msgs.append(Message(0, now, head, "straight", 60, "lap_head"))
-    for i, c in enumerate(rep.losses[:2]):
-        cause = c["causes"][0] if c["causes"] else "slower through there"
-        t = f"{c['corner']}: {cause}. That cost {fmt_d(c['time_loss'])}."
-        t += sass("lockup" if c["lockup"] else "offtrack" if c["off_track"] else "loss", sass_level)
-        msgs.append(Message(2 + i, now, t, "straight", 90, f"loss{i}"))
-    if rep.gains:
-        g = rep.gains[0]
-        msgs.append(Message(5, now, f"Good job in {g['corner']}, gained {fmt_d(g['time_loss'])}.", "straight", 90, "gain"))
+        head = f"{t}, {fmt_d(rep.delta)} {'off' if rep.delta > 0 else 'up on'} {rep.ref_label}.{where}"
+        if not rep.valid:
+            head += " Deleted though."
+    msgs = [Message(0, now, head, "straight", 60, "lap_head")]
+    if top:
+        cause = top["causes"][0] if top["causes"] else "slower there"
+        msgs.append(Message(2, now, f"{top['corner']}, {fmt_d(top['time_loss'])}: {cause}."
+                            + sass("lockup" if top["lockup"] else "offtrack" if top["off_track"] else "loss", sass_level),
+                            "straight", 90, "loss0"))
+    if rep.gains and rep.gains[0]["time_loss"] <= -0.15 and random.random() < 0.5:
+        msgs.append(Message(5, now, pick(f"Good through {rep.gains[0]['corner']}.", f"{rep.gains[0]['corner']} was strong."),
+                            "straight", 90, "gain"))
     return msgs
 
 
 TIPS = [  # cause fragment -> what to do next lap
-    ("locked", "smoother brake release as you turn in"),
-    ("ran wide", "keep it inside the white lines, a metre tighter on exit"),
-    ("earlier", "brake later, trust the car"),
+    ("locked", "ease off the brake as you turn in"),
+    ("ran wide", "a metre tighter on exit, keep it on the track"),
+    ("earlier", "brake later, the car will stop"),
     ("overshot", "brake a touch earlier and hit the apex"),
     ("apex speed", "carry more speed to the apex, less steering"),
-    ("too much into the apex", "slow in, fast out, sacrifice the entry"),
-    ("full throttle", "get back to full throttle sooner"),
-    ("coasted", "no coasting, it's brake or throttle"),
-    ("wheelspin", "be gentler on the throttle on exit"),
-    ("exit speed", "straighten the wheel earlier for a better exit"),
+    ("too much into the apex", "slower in, faster out"),
+    ("full throttle", "get on the power earlier"),
+    ("coasted", "no coasting, brake or throttle"),
+    ("wheelspin", "smoother on the throttle"),
+    ("exit speed", "straighten the wheel earlier on exit"),
 ]
 
 
@@ -120,40 +160,43 @@ def next_lap_messages(rep, advice: list[dict], said: set[str], adapt: dict | Non
             tip = next((t for frag, t in KEYBOARD_TIPS.items() for cause in c["causes"] if frag in cause), None)
         tip = tip or next((t for frag, t in TIPS for cause in c["causes"] if frag in cause), None)
         if tip:
-            msgs.append(Message(4, now, f"Next lap, focus on {c['corner']}: {tip}.", "straight", 120, "focus"))
+            msgs.append(Message(4, now, f"Next lap, {c['corner']}: {tip}.", "straight", 120, "focus"))
     for a in advice[:1]:
         if a["change"] not in said:
             said.add(a["change"])
-            msgs.append(Message(6, now, f"Setup idea for the garage: {a['change']}.", "straight", 240, "setup_tip"))
+            msgs.append(Message(6, now, f"When you're back in, try {a['change'][0].lower() + a['change'][1:]}.",
+                                "straight", 240, "setup_tip"))
     return msgs
 
 
+ISSUE_SAY = {"lockup": "a lock-up into {c}", "off": "running wide at {c}", "wheelspin": "wheelspin out of {c}",
+             "coast": "coasting into {c}", "late_throttle": "late on the power out of {c}"}
+
+
 def self_review_messages(lap_time: float, valid: bool, issues: list[dict], sass_level: int) -> list[Message]:
-    """Debrief for a lap with no reference to compare against (first lap of a new track)."""
+    """First lap at a track: no reference yet, so judge the lap on its own."""
     now = CLOCK()
-    head = f"Lap {fmt_t(lap_time)}{'' if valid else ', invalid'}."
+    t = short_t(lap_time)
+    head = pick(f"{t}, that's the benchmark.", f"{t}. Good start, that's our baseline.") + ("" if valid else " Deleted though.")
     if not issues:
-        head += " Clean lap, no mistakes I can see. That's our reference, now go faster."
-        return [Message(0, now, head, "straight", 60, "lap_head")]
-    msgs = [Message(0, now, head + " No reference yet, but here's what I saw.", "straight", 60, "lap_head")]
-    for n, i in enumerate(issues[:2]):   # one short call per issue: they fit on a straight
-        kind = "lockup" if "locked" in i["issue"] else "offtrack" if "wide" in i["issue"] else "loss"
-        msgs.append(Message(2 + n, now, i["issue"][0].upper() + i["issue"][1:] + "." + sass(kind, sass_level),
-                            "straight", 90, f"loss{n}"))
+        return [Message(0, now, head + " Clean, no mistakes. Now push.", "straight", 60, "lap_head")]
+    said = [ISSUE_SAY.get(i.get("kind"), "{c}").format(c=i["corner"]) for i in issues[:2]]
+    msgs = [Message(0, now, head, "straight", 60, "lap_head"),
+            Message(2, now, "Saw " + " and ".join(said) + ".", "straight", 90, "loss0")]
     top = issues[0]
-    msgs.append(Message(4, now, f"Next lap, focus on {top['corner']}: {top['tip']}.", "straight", 120, "focus"))
+    msgs.append(Message(4, now, f"Next lap, {top['corner']}: {top['tip']}.", "straight", 120, "focus"))
     return msgs
 
 
 def lap_debrief_text(rep, advice: list[dict]) -> str:
-    """Longer garage/pause debrief (template version; the LLM can expand it)."""
-    parts = [f"Lap {rep.lap_num}: {fmt_t(rep.lap_time)}, {rep.delta:+.3f} versus {rep.ref_label}. You were on {rep.input_device}."]
-    for c in rep.losses[:3]:
-        parts.append(f"{c['corner']} cost {fmt_d(c['time_loss'])}: " + ", ".join(c["causes"][:3]) + ".")
-    for g in rep.gains[:2]:
-        parts.append(f"You were quicker in {g['corner']} by {fmt_d(g['time_loss'])}, keep that.")
-    for a in advice[:2]:
-        parts.append(f"Suggestion: {a['change']}, because {a['why']}.")
+    """Garage debrief (template fallback; the LLM writes a better one when available)."""
+    parts = [f"Lap {rep.lap_num}, {short_t(rep.lap_time)}, {fmt_d(rep.delta)} {'off' if rep.delta > 0 else 'up on'} {rep.ref_label}."]
+    for c in rep.losses[:2]:
+        parts.append(f"{c['corner']} cost {fmt_d(c['time_loss'])}, " + " and ".join(c["causes"][:2]) + ".")
+    if rep.gains:
+        parts.append(f"{rep.gains[0]['corner']} was good, keep that.")
+    for a in advice[:1]:
+        parts.append(f"For the setup, try {a['change'][0].lower() + a['change'][1:]}: {a['why']}.")
     return " ".join(parts)
 
 
@@ -169,15 +212,16 @@ def race_messages(snap: dict, sass_level: int, last_calls: set[str]) -> list[Mes
 
 
 def race_lap_message(snap: dict, lap_time: float) -> Message:
-    bits = [f"P{snap.get('position')}. Lap {fmt_t(lap_time)}."]
+    """Lap-end race call: position, the gaps that matter, tyres only when they matter."""
     a, b = snap.get("ahead", {}), snap.get("behind", {})
-    if a.get("gap_s") is not None:
-        bits.append(f"Gap ahead {a['gap_s']:.1f}.")
-    if b.get("gap_s") is not None:
-        bits.append(f"Behind {b['gap_s']:.1f}.")
+    bits = [f"P{snap.get('position')}, {short_t(lap_time)}."]
+    if a.get("gap_s") is not None and a["gap_s"] < 3:
+        bits.append(f"{a.get('name', 'Car ahead').split()[-1].title()} {a['gap_s']:.1f} ahead.")
+    if b.get("gap_s") is not None and b["gap_s"] < 2:
+        bits.append(f"{b.get('name', 'Car behind').split()[-1].title()} {b['gap_s']:.1f} behind.")
     t = snap.get("tyres", {})
-    if t.get("wear_pct"):
-        bits.append(f"Tyres {max(t['wear_pct'])} percent worn.")
+    if t.get("wear_pct") and max(t["wear_pct"]) >= 40:
+        bits.append(f"Tyres at {max(t['wear_pct'])} percent.")
     return Message(2, CLOCK(), " ".join(bits), "straight", 30, "race_lap")
 
 
@@ -223,6 +267,8 @@ class RadioScheduler:
         candidates = self.queue if now - top.created > 15 else [top]
         parked = bool(ctx.get("paused") or ctx.get("in_garage"))
         for m in candidates:
+            if ctx.get("talking") and m.kind != "urgent":
+                continue  # the driver is being answered: routine calls wait
             if m.kind == "garage":
                 if not parked:
                     continue  # full debriefs only when the car is parked

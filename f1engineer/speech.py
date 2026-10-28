@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import re
 import multiprocessing as mp
 import queue
 import threading
+from collections import deque
 import time
 
 import numpy as np
@@ -72,9 +74,12 @@ class TTS:
         self.voice.session = ort.InferenceSession(str(onnx), sess_options=so, providers=["CPUExecutionProvider"])
         self.sr = self.voice.config.sample_rate
         self.fx = fx
+        self.speed = cfg.tts_speed
 
     def synth(self, text: str) -> np.ndarray:
-        pcm = b"".join(ch.audio_int16_bytes for ch in self.voice.synthesize(speakable(text)))
+        from piper.config import SynthesisConfig
+        sc = SynthesisConfig(length_scale=1.0 / max(0.6, min(2.0, self.speed)), noise_scale=0.6, noise_w_scale=0.7)
+        pcm = b"".join(ch.audio_int16_bytes for ch in self.voice.synthesize(speakable(text), syn_config=sc))
         x = np.frombuffer(pcm, dtype=np.int16)
         return radio_fx(x, self.sr) if self.fx else x.astype(np.float32) / 32768.0
 
@@ -189,6 +194,23 @@ def pick_input(name: str):
     return min(hits)[1] if hits else None
 
 
+_VK = {"shift": 0x10, "ctrl": 0x11, "control": 0x11, "alt": 0x12, "caps_lock": 0x14, "capslock": 0x14, "space": 0x20,
+       "tab": 0x09, "backspace": 0x08, "enter": 0x0D, "insert": 0x2D, "delete": 0x2E, "home": 0x24, "end": 0x23,
+       "page_up": 0x21, "page_down": 0x22, "`": 0xC0, "backtick": 0xC0, "mouse4": 0x05, "mouse5": 0x06}
+
+
+def _vk_code(name: str) -> int | None:
+    """Windows virtual-key code for a key name ('shift', 't', 'f9', 'mouse4', ...)."""
+    n = name.strip().lower()
+    if n in _VK:
+        return _VK[n]
+    if len(n) == 1 and n.isalnum():
+        return ord(n.upper())
+    if n.startswith("f") and n[1:].isdigit() and 1 <= int(n[1:]) <= 24:
+        return 0x6F + int(n[1:])
+    return None
+
+
 class XInput:
     """Minimal XInput poller (Windows). Returns pressed button bitmask, 0 if no pad."""
 
@@ -228,7 +250,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     import sounddevice as sd
     try:
         import psutil
-        psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 10)
+        psutil.Process().nice(psutil.NORMAL_PRIORITY_CLASS if os.name == "nt" else 0)   # latency-critical, bursty
     except Exception:
         pass
     log = lambda s: outq.put(("log", s))  # noqa: E731
@@ -245,6 +267,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     playing = threading.Event()
     ptt_sources = {"key": False, "pad": False, "game": False}
     rec = {"on": False, "chunks": []}
+    preroll: deque = deque(maxlen=5)   # last 0.5 s before the button: people start talking as they press
     lock = threading.Lock()
 
     def beep(freq: float):
@@ -285,7 +308,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                     say_q.get_nowait()
                 except queue.Empty:
                     break
-            rec["chunks"] = []
+            rec["chunks"] = list(preroll)
             rec["on"] = True
             beep(1200)
             log(f"PTT down ({src})")
@@ -319,6 +342,8 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     def mic_cb(indata, frames, t, status):
         if rec["on"]:
             rec["chunks"].append(indata.copy())
+        else:
+            preroll.append(indata.copy())
 
     threading.Thread(target=player, daemon=True).start()
     mic = None
@@ -333,7 +358,20 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     except Exception as e:
         log(f"no microphone: {e!r}")
 
+    vk = _vk_code(cfg.ptt_key) if sys.platform == "win32" else None
+    if vk:
+        def key_poll():
+            user32, last = ctypes.windll.user32, False
+            while True:
+                down = bool(user32.GetAsyncKeyState(vk) & 0x8000)
+                if down != last:
+                    set_ptt("key", down)
+                    last = down
+                time.sleep(0.015)
+        threading.Thread(target=key_poll, daemon=True).start()
     try:
+        if vk:
+            raise ImportError("polling instead")   # Windows uses the poller above
         from pynput import keyboard
         key = cfg.ptt_key.lower()
 
@@ -346,8 +384,10 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                                on_release=lambda k: match(k) and set_ptt("key", False))
         kl.daemon = True
         kl.start()
+    except ImportError:
+        pass
     except Exception as e:
-        log(f"keyboard hotkey unavailable: {e!r}")
+        log(f"keyboard hotkey unavailable: {e!r} (use a controller button instead)")
 
     xi = XInput()
     pad_mask = XInput.BUTTONS.get(cfg.ptt_game_button, 0)

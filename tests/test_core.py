@@ -181,10 +181,10 @@ def test_live_coaching_on_real_capture():
     finally:
         radio.CLOCK = old
     text = " | ".join(said)
-    assert "No reference yet" in text                      # lap 1 gets a debrief, not just "banker"
-    assert "Next lap, focus on" in text
-    assert re.search(r"Sector (one|two)", text)
-    assert "Lap 1:29.098" in text and "Lap 1:34.598" in text  # lap summaries are not crowded out
+    assert "baseline" in text or "benchmark" in text        # lap 1 gets a debrief, not just "banker"
+    assert "Saw " in text and "Next lap, " in text            # what went wrong + what to do
+    assert "1:34.6" in text                                    # lap summaries are not crowded out
+    assert "Give me a clean lap" not in text and "reconnaissance" not in text
     assert not re.search(r"\b\d{2,}\.\d seconds", text)     # no nonsense deltas around the line
 
 
@@ -281,3 +281,33 @@ def test_real_session_reencoded_as_f1_24_gives_same_laps():
     a, b = run(2020), run(2024)
     key = lambda e: [(round(r.lap_time, 3), r.input_device, r.mistakes, [c["corner"] for c in r.losses]) for r in e.reports]  # noqa: E731
     assert key(a) == key(b) and b.game == "F1 24" and b.stats["parse_errors"] == 0
+
+
+def test_pipeline_answers_in_order_and_dedupes():
+    """Three quick questions: generated in parallel, spoken strictly in the order asked; a double press is merged."""
+    import threading
+    import time as _t
+    from f1engineer.config import Config
+    from f1engineer.engine import Engine
+    from f1engineer.storage import Storage
+    cfg = Config()
+    cfg.data_dir = Path(tempfile.mkdtemp())
+    e = Engine(cfg, storage=Storage(cfg))
+    said = []
+    e.speech.say = lambda text, prio=5: said.append(text)
+
+    class SlowFirst:   # the first question is the slowest to answer
+        def stream(self, messages, tools, **_):
+            q = messages[-1]["content"]
+            _t.sleep(0.6 if q.startswith("one") else 0.05)
+            yield {"type": "text", "text": f"Answer to {q.split()[0]}. "}
+    e.agent.provider = SlowFirst()
+    qs = ["one question here", "two question here", "two question here", "three question here"]
+    th = [threading.Thread(target=e.ask, args=(q,)) for q in qs]
+    for x in th:
+        x.start()
+        _t.sleep(0.02)
+    for x in th:
+        x.join(10)
+    answers = [s for s in said if s.startswith("Answer")]
+    assert answers == ["Answer to one.", "Answer to two.", "Answer to three."]

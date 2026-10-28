@@ -38,6 +38,7 @@ class LiveCoach:
         self.gone_called = False
         self.bring_home_called = False
         self.status = -1
+        self._race_mistake_said = -1e9
         self.statuses: dict[int, set[int]] = {}   # lap number -> driver statuses seen (out lap detection)
 
     # ---- helpers -----------------------------------------------------------------
@@ -188,12 +189,20 @@ class LiveCoach:
                        f"{name} was mega. {radio.fmt_d(m.time_loss).capitalize()} gained.", f"Nice through {name}. Keep doing that.")
         else:
             return
+        if eng.tr.is_race:   # in a race, mistakes are worth a word now and then, not a running commentary
+            now = radio.CLOCK()
+            if now - self._race_mistake_said < 120:
+                return
+            self._race_mistake_said = now
         self._push(txt, priority=1, ttl=12, key="live")
 
     def _metrics(self, lap, c: LM.Corner, dist: float):
         """Corner metrics for the in-progress lap (grid-resampled up to the current distance, padded with the reference)."""
         ref = self.eng.ref["rs"]
-        ch = lap.channels
+        # the telemetry thread keeps appending while we read: snapshot every channel to the same length
+        live = lap.channels
+        m = min(len(v) for v in live.values())
+        ch = {k: v[:m] for k, v in list(live.items())}
         d = np.asarray(ch["dist"], dtype=np.float64)
         ok = d >= -1
         if ok.sum() < 20:

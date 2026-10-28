@@ -53,8 +53,7 @@ def main():
         eng.feed(d, wall=t)
         n += 1
         if n % 24 == 0:  # ~10 Hz scheduler ticks in capture time
-            eng.sched.tick(eng.ctx())
-            eng.coach.tick()
+            eng.step(n // 24)
     eng.drain()
     el = time.perf_counter() - t_start
     print(f"\n{n} packets in {el:.1f}s ({n / el:.0f} pkt/s, {(t - t0) / el:.0f}x real time); "

@@ -131,19 +131,19 @@ def self_review(lap_rs: dict, corners: list[LM.Corner]) -> list[dict]:
     for m in metrics:
         name = m.corner.name
         if m.lockup:
-            out.append({"corner": name, "severity": 3, "issue": f"locked up into {name}",
+            out.append({"corner": name, "severity": 3, "kind": "lockup", "issue": f"locked up into {name}",
                         "tip": "smoother brake release as you turn in"})
         if m.off_track:
-            out.append({"corner": name, "severity": 3, "issue": f"ran wide at {name}",
+            out.append({"corner": name, "severity": 3, "kind": "off", "issue": f"ran wide at {name}",
                         "tip": "a metre tighter on exit, keep it inside the lines"})
         if m.wheelspin:
-            out.append({"corner": name, "severity": 2, "issue": f"wheelspin out of {name}",
+            out.append({"corner": name, "severity": 2, "kind": "wheelspin", "issue": f"wheelspin out of {name}",
                         "tip": "be gentler on the throttle on exit"})
         if m.coast_m >= 30:
-            out.append({"corner": name, "severity": 2, "issue": f"coasted {m.coast_m:.0f} metres into {name}",
+            out.append({"corner": name, "severity": 2, "kind": "coast", "issue": f"coasted {m.coast_m:.0f} metres into {name}",
                         "tip": "no coasting, it's brake or throttle"})
         if m.throttle_on is not None and m.throttle_on > 120:
-            out.append({"corner": name, "severity": 1, "issue": f"full throttle {m.throttle_on:.0f} metres after the apex of {name}",
+            out.append({"corner": name, "severity": 1, "kind": "late_throttle", "issue": f"full throttle {m.throttle_on:.0f} metres after the apex of {name}",
                         "tip": "get back to full throttle sooner"})
     out.sort(key=lambda x: -x["severity"])
     return out

@@ -20,6 +20,9 @@ CREATE TABLE IF NOT EXISTS laps(id INTEGER PRIMARY KEY AUTOINCREMENT, session_ui
 CREATE TABLE IF NOT EXISTS radio(id INTEGER PRIMARY KEY AUTOINCREMENT, session_uid TEXT, t REAL, role TEXT, text TEXT);
 CREATE INDEX IF NOT EXISTS laps_session ON laps(session_uid);
 CREATE TABLE IF NOT EXISTS imports(path TEXT PRIMARY KEY, mtime REAL);
+-- race log: one row per lap of a race (position, gaps, tyres, fuel...) for the engineer and the dashboard
+CREATE TABLE IF NOT EXISTS race_log(session_uid TEXT, lap INTEGER, ts REAL, lap_time REAL, data TEXT,
+  PRIMARY KEY(session_uid, lap));
 -- long-term memory: one small row per player lap, never pruned by session retention
 CREATE TABLE IF NOT EXISTS lap_summary(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, track TEXT, session_type TEXT,
   session_uid TEXT, lap_num INTEGER, lap_time REAL, valid INTEGER, input TEXT, assists TEXT, style TEXT, corners TEXT,
@@ -76,6 +79,7 @@ class Storage:
             for uid in old:
                 self.db.execute("DELETE FROM laps WHERE session_uid=?", (uid,))
                 self.db.execute("DELETE FROM radio WHERE session_uid=?", (uid,))
+                self.db.execute("DELETE FROM race_log WHERE session_uid=?", (uid,))
                 self.db.execute("DELETE FROM sessions WHERE uid=?", (uid,))
                 shutil.rmtree(self.root / "sessions" / uid, ignore_errors=True)
             self.db.commit()
@@ -148,6 +152,23 @@ class Storage:
                  input_device, json.dumps(lap.assists), json.dumps(style), json.dumps(corners) if corners else None,
                  json.dumps(mistakes), ref_label))
             self.db.commit()
+
+    def save_race_lap(self, uid, lap: int, lap_time: float, snap: dict) -> None:
+        keep = {k: snap.get(k) for k in ("position", "ahead", "behind", "tyres", "fuel", "ers", "safety_car", "weather",
+                                         "penalties_s", "pit_status", "tyre_temps_surface", "total_laps")}
+        with self.lock:
+            self.db.execute("INSERT OR REPLACE INTO race_log VALUES(?,?,?,?,?)",
+                            (str(uid), lap, time.time(), lap_time, json.dumps(keep, default=str)))
+            self.db.commit()
+
+    def race_log(self, uid=None) -> list[dict]:
+        with self.lock:
+            if uid is None:
+                r = self.db.execute("SELECT session_uid FROM race_log ORDER BY ts DESC LIMIT 1").fetchone()
+                uid = r[0] if r else None
+            rows = self.db.execute("SELECT lap, lap_time, data FROM race_log WHERE session_uid=? ORDER BY lap",
+                                   (str(uid),)).fetchall() if uid else []
+        return [{"lap": lap, "lap_time": t, **json.loads(d)} for lap, t, d in rows]
 
     def log_radio(self, uid: int, role: str, text: str) -> None:
         with self.lock:

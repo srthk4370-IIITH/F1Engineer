@@ -21,14 +21,16 @@ Telemetry analysis, speech recognition and the voice run locally on your PC; the
 - **Sector deltas and lap context.** "Sector two, four tenths up." "You're three tenths up, bring it home." Out laps, in laps.
 - **Debrief after every lap.** Lap time vs your best (or the Time Trial ghost), the biggest losses with the cause (braked 12 m early, apex speed down, late on the throttle, coasting, wheelspin...), what you did well, and "Next lap, focus on X: do Y".
 - **Even on lap one.** No reference yet? It reviews the lap on its own (lock-ups, running wide, wheelspin, coasting).
-- **Races:** position, gaps ahead and behind, tyre wear and the wear cliff, fuel, ERS, safety car / VSC, weather.
-- **Sass dial** from strictly professional (0) to roasting (3). "Be a man, brake later."
+- **Races, like a real pit wall:** a radio check with the actual conditions, then he calls it himself: "Safety car. Box, box, cheap stop" (or "stay out" when it isn't worth it), "Tyres are done, box this lap", "Box next lap for mediums" from a strategy simulation rerun every lap, "Rears are hot, easy on the exits", cold tyres, hot brakes, fuel, rain, DRS fights, damage and penalties. A lap-by-lap race log is kept.
+- **Thinks for himself:** at lap ends and on events the AI investigates the race or your lap with its tools and decides whether a call is worth making (or stays silent). Your own questions stay a normal conversation.
+- **Sounds like an engineer, not a gadget:** short calls, number first, brisk voice (speed adjustable), dry humour only now and then (sass 0-3).
 
 **A coach you can talk to** (push-to-talk in the car, or chat on the dashboard)
 - Ask anything: tyre temps, who you're racing, why you're slow in a corner, what to change in the setup.
 - **Long-term memory:** it tracks every lap you drive (90 days), so it can answer "Am I improving?" with numbers, describe your driving style (brake ramp, trail braking, coasting, throttle pick-up, vs the reference), and follow up on goals you tell it ("remember: my goal is a 1:27 at Silverstone").
 - **Strategy maths:** "I'm thinking softs, pit lap 4 for hards in a 10-lap race?" is simulated against the best 0/1/2-stop plans (compound pace, wear, cliff, pit loss, two-compound rule), and it will tell you if your plan is worse and by how much.
 - Short and sharp at speed; a proper conversation when you're parked, paused or on the dashboard. It writes you a garage debrief after each lap.
+- Ask several things in a row: answers are worked out in parallel and come back one by one in the order you asked; a double press is merged, nothing goes silent (instant "Checking.", hard timeouts).
 
 **Dashboard** (`http://127.0.0.1:8020`, also works without the game running)
 - Live: delta, speed, gear, revs, pedals, tyre temps and wear, fuel, ERS, last-lap corner table, engineer suggestions.
@@ -188,6 +190,7 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 | `OPENAI_MODEL` | `gpt-5.4-mini` | Chat model |
 | `F1E_SASS` | `2` | 0 professional ... 3 roasts you |
 | `F1E_TTS_VOICE` | `en_GB-alan-medium` | Piper voice |
+| `F1E_TTS_SPEED` | `1.3` | Speaking rate (1.0 = Piper default) |
 | `F1E_PTT_KEY` / `F1E_PTT_BUTTON` | `shift` / `RS` | Push-to-talk key / controller button |
 | `F1E_MIC` | (Windows default) | Part of your microphone's name, e.g. `Kraken` |
 | `F1E_GPU` | `auto` | `auto` = use the GPU only while it has free memory; `off` = CPU |
