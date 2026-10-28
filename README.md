@@ -207,7 +207,8 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 | `F1E_RADIO_FX` | `light` | Radio effect: `light` (crisp), `full` (narrow, crunchy pit radio), `off` |
 | `F1E_WAKE` / `F1E_ENGINEER_NAME` | `on` / `Bono` | Hands-free wake word, and your engineer's name (pick any: it changes the wake word too) |
 | `F1E_PTT_KEY` / `F1E_PTT_BUTTON` | `shift` / `RS` | Push-to-talk key / controller button |
-| `F1E_MIC` | (Windows default) | Part of your microphone's name, e.g. `Kraken` |
+| `F1E_MIC` | (Windows default) | Part of your microphone's name, e.g. `Kraken` (a headset mic is far more accurate than a laptop mic next to the game's speakers) |
+| `F1E_STT` | `local` | Speech recognition: `local` (Whisper small.en on a free GPU, base.en on CPU) or `openai` (cloud, best in very noisy rooms, slower) |
 | `F1E_GPU` | `auto` | `auto` = use the GPU only while it has free memory; `off` = CPU |
 | `F1E_UDP_HOST` / `F1E_UDP_PORT` | `127.0.0.1` / `20777` | Telemetry listener (`0.0.0.0` for a console on your LAN) |
 | `F1E_WEB_PORT` | `8020` | Dashboard port |
@@ -253,6 +254,7 @@ Nothing to configure: the engineer works out what it's talking to and adapts.
 | Problem | Fix |
 |---|---|
 | No radio at all | `uv run f1engineer doctor`. Check UDP telemetry is on in the game (IP 127.0.0.1, port 20777) and nothing else is using port 20777. |
+| It mishears me | Use a headset mic (`F1E_MIC`), re-run `uv run f1engineer wake`, or try `F1E_STT=openai`. Check `logs/engine.log` for what was heard. |
 | It doesn't hear me | Try "Hey Bono" (hands-free) first. You should hear a beep when you press push-to-talk. `doctor` shows which microphone is used; virtual mics (phone-webcam apps, Stereo Mix) record silence. Pick your real mic in `setup` or set `F1E_MIC`. Check `logs/engine.log` for "PTT released ... level ... dBFS". |
 | Shift does something in the game | Choose another key in `setup` (or `F1E_PTT_KEY`), or use the controller button. |
 | Answers are generic / "offline" | No or invalid OpenAI key or no credit: `doctor`, then re-run `setup`. |

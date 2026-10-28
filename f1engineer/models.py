@@ -55,7 +55,7 @@ if __name__ == "__main__":
     c = Config()
     print(ensure_piper(c))
     import copy
-    for m in ("tiny.en", "base.en"):
+    for m in ("base.en", "small.en"):
         cc = copy.copy(c)
         cc.stt_model = m
         print(ensure_whisper(cc))

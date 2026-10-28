@@ -60,15 +60,28 @@ def split_wake(text: str, names: set[str]) -> tuple[bool, str]:
     return False, ""
 
 
-class VoiceGate:
-    """Cuts speech bursts out of 0.1 s mic blocks: start above threshold, end after `hang` s below it."""
+def safe_threshold(wk: dict | None) -> float:
+    """Trigger level that can never sit above the driver's own voice (old enrolments could: game sound on speakers)."""
+    if not wk:
+        return -38.0
+    th, voice = wk.get("threshold_db", -38.0), wk.get("voice_db")
+    return min(th, voice - 4) if voice is not None else th
 
-    def __init__(self, threshold_db: float, hang: float = 0.6, max_len: float = 8.0):
-        self.th, self.hang, self.max_len = threshold_db, hang, max_len
+
+class VoiceGate:
+    """Cuts speech out of 0.1 s mic blocks with hysteresis: starts above `threshold`, keeps going until the level has
+    stayed `drop` dB lower for `hang` s (so quieter syllables mid-sentence don't end it)."""
+
+    def __init__(self, threshold_db: float, hang: float = 0.6, max_len: float = 9.0, drop: float = 8.0):
+        self.th, self.hang, self.max_len, self.drop = threshold_db, hang, max_len, drop
         self.buf: list[np.ndarray] = []
         self.pre: list[np.ndarray] = []
         self.quiet = 0.0
         self.active = False
+
+    def arm(self) -> None:
+        """Start a segment now, without waiting for the level (used right after "Go ahead")."""
+        self.active, self.buf, self.quiet = True, list(self.pre), 0.0
 
     def feed(self, block: np.ndarray) -> np.ndarray | None:
         level = 20 * np.log10(float(np.sqrt(np.mean(block ** 2))) + 1e-9)
@@ -79,7 +92,7 @@ class VoiceGate:
                 self.active, self.buf, self.quiet = True, list(self.pre), 0.0
             return None
         self.buf.append(block)
-        self.quiet = self.quiet + dur if level <= self.th else 0.0
+        self.quiet = self.quiet + dur if level <= self.th - self.drop else 0.0
         length = sum(len(b) for b in self.buf) / 16000
         if self.quiet >= self.hang or length >= self.max_len:
             self.active = False
@@ -117,7 +130,7 @@ def enrol(cfg, name: str = "Bono", takes: int = 4) -> dict:
         heard.append(t)
         print(f"    heard: {t!r}")
     v = float(np.median(voice))
-    th = noise + 0.55 * (v - noise) if v > noise + 6 else noise + 6
+    th = noise + 0.55 * (v - noise) if v > noise + 6 else min(noise + 3, v - 4)   # never above the voice
     data = {"name": name, "heard": heard, "voice_db": round(v, 1), "noise_db": round(noise, 1), "threshold_db": round(th, 1),
             "date": time.strftime("%Y-%m-%d")}
     out = cfg.data_dir / "wake.json"
@@ -126,6 +139,7 @@ def enrol(cfg, name: str = "Bono", takes: int = 4) -> dict:
     ok = sum(split_wake(h, variants(name, heard))[0] for h in heard)
     print(f"\n  Voice {v:.0f} dBFS, room {noise:.0f} dBFS -> trigger level {th:.0f} dBFS. Recognised {ok}/{takes} takes.")
     if v < noise + 6:
-        print("  Your voice is barely louder than the room: use a headset mic or turn the game down for hands-free calls.")
+        print("  Your voice is barely louder than the room (the mic hears the game). For clean recognition use a headset "
+              "mic (set it in setup or F1E_MIC=...), or headphones instead of speakers.")
     print(f"  Saved {out}. In the game, say 'Hey {name}' (or just '{name}') followed by your question.")
     return data

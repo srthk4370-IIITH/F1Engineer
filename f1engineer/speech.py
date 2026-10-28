@@ -21,9 +21,48 @@ import time
 
 import numpy as np
 
-STT_PROMPT = ("F1 race engineer radio. Hey Bono. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
+STT_PROMPT = ("F1 race engineer radio, driver talking to the engineer. Hey Bono. What setup changes should I make? "
+              "What's my driving style? Am I improving? Tyre temps, tyre wear, gap ahead, gap behind, laps left, coasting, "
+              "steering, braking, throttle, corners, traction, understeer, oversteer. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
               "Luffield, the Loop. Box box, undercut, overcut, DRS, ERS, softs, mediums, hards, inters, brake bias, "
               "front wing, rear wing, differential, understeer, oversteer, lock-up, tyre wear, delta, sector, lap time.")
+
+
+def prep_audio(a: np.ndarray) -> np.ndarray:
+    """Steady input level for the recogniser (quiet laptop mics). Measured: trimming silence or pre-emphasis made it
+    WORSE (it clipped first words), so only the DC offset and the gain are touched: loud parts to ~-20 dBFS, max +20 dB."""
+    a = np.asarray(a, dtype=np.float32)
+    if len(a) < 1600:
+        return a
+    a = a - float(np.mean(a))
+    frames = a[: len(a) // 320 * 320].reshape(-1, 320)
+    level = float(np.percentile(np.sqrt(np.mean(frames ** 2, axis=1)), 90)) + 1e-9
+    return np.clip(a * min(10.0, 0.1 / level), -1, 1).astype(np.float32)
+
+
+def openai_transcriber():
+    """Optional (F1E_STT=openai): OpenAI's transcription model - best in a noisy room, needs the API key, ~0.5-1 s."""
+    import io
+    import os
+    import wave
+    if not os.getenv("OPENAI_API_KEY"):
+        return None
+    from openai import OpenAI
+    client = OpenAI(timeout=8.0, max_retries=0)
+    model = os.getenv("F1E_STT_CLOUD_MODEL", "gpt-4o-mini-transcribe")
+
+    def run(audio16k: np.ndarray) -> str:
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes((np.clip(audio16k, -1, 1) * 32767).astype(np.int16).tobytes())
+        buf.name = "radio.wav"
+        buf.seek(0)
+        r = client.audio.transcriptions.create(model=model, file=buf, language="en", prompt=STT_PROMPT)
+        return (r.text or "").strip()
+    return run
 
 
 def _bandpass(sr: int, lo: float = 300, hi: float = 3400, taps: int = 101) -> np.ndarray:
@@ -131,10 +170,11 @@ class STT:
         from f1engineer.models import ensure_whisper
         self.device = "cpu"
         self.model = None
+        self.cloud = openai_transcriber() if cfg.stt == "openai" else None
         auto = cfg.stt_model == "auto"
         if _gpu_ok(cfg):
             c = copy.copy(cfg)
-            c.stt_model = "base.en" if auto else cfg.stt_model
+            c.stt_model = "small.en" if auto else cfg.stt_model
             try:  # CUDA needs cuBLAS/cuDNN DLLs; the warm-up proves they load
                 self.model = WhisperModel(str(ensure_whisper(c)), device="cuda", compute_type="float16")
                 self.transcribe(np.zeros(16000, np.float32))
@@ -143,7 +183,7 @@ class STT:
                 self.model = None
         if self.model is None:
             c = copy.copy(cfg)
-            c.stt_model = "tiny.en" if auto else cfg.stt_model
+            c.stt_model = "base.en" if auto else cfg.stt_model
             self.model = WhisperModel(str(ensure_whisper(c)), device="cpu", compute_type="int8", cpu_threads=4)
             self.name = c.stt_model
             self.transcribe(np.zeros(16000, np.float32))  # warm-up
@@ -155,7 +195,7 @@ class STT:
         from faster_whisper import WhisperModel
         from f1engineer.models import ensure_whisper
         c = copy.copy(cfg)
-        c.stt_model = "tiny.en" if cfg.stt_model == "auto" else cfg.stt_model
+        c.stt_model = "base.en" if cfg.stt_model == "auto" else cfg.stt_model
         cpu = WhisperModel(str(ensure_whisper(c)), device="cpu", compute_type="int8", cpu_threads=4)
         self.model, old = cpu, self.model
         del old
@@ -174,8 +214,14 @@ class STT:
             return self.transcribe(audio16k)
 
     def transcribe(self, audio16k: np.ndarray) -> str:
-        segs, _ = self.model.transcribe(audio16k, language="en", beam_size=1, initial_prompt=STT_PROMPT,
-                                        vad_filter=False, condition_on_previous_text=False, without_timestamps=True)
+        if self.cloud is not None:
+            try:
+                return self.cloud(prep_audio(audio16k))
+            except Exception as e:
+                print(f"[speech] cloud transcription failed ({e!r}): using the local model")
+        segs, _ = self.model.transcribe(prep_audio(audio16k), language="en", beam_size=5 if self.device == "cuda" else 2,
+                                        initial_prompt=STT_PROMPT, vad_filter=False, condition_on_previous_text=False,
+                                        without_timestamps=True, temperature=0.0)
         return " ".join(s.text.strip() for s in segs).strip()
 
 
@@ -371,11 +417,16 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
 
     def wake_loop():
         names = W.variants(cfg.wake_name, (wk or {}).get("heard"))
-        gate = W.VoiceGate((wk or {}).get("threshold_db", -38.0), hang=1.1)   # a breath mid-sentence isn't the end
+        gate = W.VoiceGate(W.safe_threshold(wk), hang=1.2)   # a breath mid-sentence isn't the end
+        arm = False
         await_until = 0.0
         log(f"wake word on: say 'Hey {cfg.wake_name}' (trigger level {gate.th:.0f} dBFS)")
         while True:
-            seg = gate.feed(wake_q.get())
+            block = wake_q.get()
+            if arm:                      # first audio after "Go ahead" finished playing: the question starts now
+                gate.arm()
+                arm = False
+            seg = gate.feed(block)
             if seg is None or rec["on"]:
                 continue
             try:
@@ -402,7 +453,8 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 beep(1200)
                 seq[0] += 1
                 say_q.put((0, seq[0], random.choice(["Go ahead.", "Yep, go.", "Listening."])))
-                await_until = time.time() + 8.0
+                await_until = time.time() + 12.0
+                arm = True
     if wake_on:
         threading.Thread(target=wake_loop, name="wake", daemon=True).start()
 

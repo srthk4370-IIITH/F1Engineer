@@ -123,7 +123,7 @@ def main() -> None:
     from f1engineer.models import ensure_piper, ensure_whisper
     import copy
     ensure_piper(cfg)
-    for m in ("tiny.en", "base.en"):
+    for m in ("base.en", "small.en"):
         c = copy.copy(cfg)
         c.stt_model = m
         ensure_whisper(c)
@@ -212,7 +212,7 @@ def doctor() -> None:
             print(f"[FAIL] import {mod}: {e!r}")
     from f1engineer.models import piper_paths
     print(f"[{ok(all(p.exists() for p in piper_paths(cfg)))}] piper voice {cfg.tts_voice}")
-    for m in ("tiny.en", "base.en"):
+    for m in ("base.en", "small.en"):
         print(f"[{ok((cfg.models_dir / 'whisper' / m / 'model.bin').exists())}] whisper {m}")
     env = _read_env()
     print(f"[{'OK  ' if env.get('OPENAI_API_KEY') else 'INFO'}] OPENAI_API_KEY in .env (optional; offline brain otherwise), "
