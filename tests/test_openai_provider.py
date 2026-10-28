@@ -87,3 +87,28 @@ def test_openai_provider_tool_loop(monkeypatch):
     assert len(SEEN) == 2 and SEEN[0]["stream"] is True and SEEN[0]["tools"]
     assert SEEN[1]["messages"][-1]["role"] == "tool" and SEEN[1]["messages"][-2]["tool_calls"][0]["function"]["name"] == "get_corner_history"
     assert time.perf_counter() - t0 < 5
+
+
+def test_param_fallback(monkeypatch):
+    """Models reject different params; the provider must adapt (effort ladder, drop temperature/effort)."""
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    from f1engineer.llm.agent import OpenAIProvider
+
+    def run(errors):
+        p = OpenAIProvider("x")
+        seen = []
+
+        def create(**kw):
+            seen.append(dict(kw))
+            if errors:
+                raise Exception(errors.pop(0))
+            return iter(())
+        monkeypatch.setattr(p.client.chat.completions, "create", create)
+        list(p.stream([], []))
+        return p.kw
+
+    kw = run(["Unsupported value: 'reasoning_effort' does not support 'none' with this model.",
+              "Unsupported value: 'temperature' does not support 0.6 with this model."])
+    assert kw["reasoning_effort"] == "minimal" and "temperature" not in kw
+    kw = run(["Unrecognized request argument supplied: reasoning_effort"])
+    assert "reasoning_effort" not in kw and kw["temperature"] == 0.6

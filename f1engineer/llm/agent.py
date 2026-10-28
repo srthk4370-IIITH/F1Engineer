@@ -64,21 +64,43 @@ def sentences(chunks: Iterator[str]) -> Iterator[str]:
         yield buf.strip()
 
 
+DEFAULT_MODEL = "gpt-6-luna"
+# Radio needs speed over deep thought: ask for the lowest reasoning effort the model accepts.
+EFFORT_LADDER = ["none", "minimal", "low"]
+
+
 class OpenAIProvider:
     def __init__(self, model: str | None = None):
         from openai import OpenAI
         self.client = OpenAI()
-        self.model = model or os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+        self.model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
+        effort = os.getenv("OPENAI_REASONING", "none")
+        self._efforts = EFFORT_LADDER[EFFORT_LADDER.index(effort):] if effort in EFFORT_LADDER else [effort]
+        # learned once per process: params this model rejects are dropped/adjusted, then reused
+        self.kw: dict = {"temperature": 0.6, "max_completion_tokens": 600, "reasoning_effort": self._efforts[0]}
+
+    def _create(self, messages, tools):
+        for _ in range(6):
+            try:
+                return self.client.chat.completions.create(model=self.model, messages=messages, tools=tools,
+                                                           stream=True, **self.kw)
+            except Exception as e:
+                msg = str(e)
+                if "temperature" in msg and "temperature" in self.kw:
+                    self.kw.pop("temperature")
+                elif "reasoning" in msg and "reasoning_effort" in self.kw:
+                    cur = self.kw["reasoning_effort"]
+                    nxt = self._efforts[self._efforts.index(cur) + 1:] if cur in self._efforts else []
+                    if f"'{cur}'" in msg and nxt:  # this effort value rejected -> next-lowest
+                        self.kw["reasoning_effort"] = nxt[0]
+                    else:  # parameter itself unsupported (non-reasoning model, e.g. gpt-4.1)
+                        self.kw.pop("reasoning_effort")
+                else:
+                    raise
+        raise RuntimeError(f"{self.model}: could not find accepted parameters ({self.kw})")
 
     def stream(self, messages: list[dict], tools: list[dict]) -> Iterator[dict]:
-        kw = {"temperature": 0.6, "max_completion_tokens": 350}
-        try:
-            resp = self.client.chat.completions.create(model=self.model, messages=messages, tools=tools, stream=True, **kw)
-        except Exception as e:  # some (reasoning) models only accept the default temperature
-            if "temperature" not in str(e):
-                raise
-            kw.pop("temperature")
-            resp = self.client.chat.completions.create(model=self.model, messages=messages, tools=tools, stream=True, **kw)
+        resp = self._create(messages, tools)
         calls: dict[int, dict] = {}
         for ev in resp:
             if not ev.choices:

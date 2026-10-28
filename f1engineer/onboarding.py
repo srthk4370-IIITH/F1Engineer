@@ -93,7 +93,7 @@ def main() -> None:
         err = _check_openai(key)
         print("  Key works." if not err else f"  Could not verify the key ({err}). Saved anyway; check it later.")
         env["OPENAI_API_KEY"] = key
-        env["OPENAI_MODEL"] = _ask("  Model", env.get("OPENAI_MODEL", "gpt-4.1-mini"))
+        env["OPENAI_MODEL"] = _ask("  Model", env.get("OPENAI_MODEL", "gpt-6-luna"))
 
     # 3. preferences
     print("\n[3/6] Your engineer")
