@@ -65,7 +65,7 @@ PTT --> Whisper STT --> LLM agent with tools over live session data (OpenAI, or 
 - All numbers come from deterministic local code. The LLM only phrases answers and must call tools for every number.
 - Time Trial ghosts send no lap data, so their laps are rebuilt by projecting their positions onto a track map learned from your first lap.
 - Guardrails: below-normal CPU priority, memory cap with auto-restart, keeps ≥5.5 GB disk free, data capped at 2 GB
-  (the last 2 sessions plus a personal-best reference per track), rotating logs, localhost-only network, single instance.
+  (full telemetry for the last 5 sessions, 90 days of lap history, newest 2 raw recordings (max 30 days), 30 days of radio log, a personal-best reference per track; data/ hard cap 1 GB), rotating logs, localhost-only network, single instance.
 
 ## Supported games
 F1 2020 (packet format 2020) is fully supported and tested on real telemetry. F1 2021 can also send the 2020 format

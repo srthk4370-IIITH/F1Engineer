@@ -80,6 +80,41 @@ class Storage:
                 shutil.rmtree(self.root / "sessions" / uid, ignore_errors=True)
             self.db.commit()
 
+    def prune_history(self, keep_captures: int | None = None) -> dict:
+        """Age/size limits for everything that isn't covered by session retention. Safe to call any time."""
+        cfg, now, out = self.cfg, time.time(), {}
+        with self.lock:
+            out["lap_summaries"] = self.db.execute("DELETE FROM lap_summary WHERE ts < ?",
+                                                   (now - cfg.history_days * 86400,)).rowcount
+            out["radio_lines"] = self.db.execute("DELETE FROM radio WHERE t < ?", (now - cfg.radio_days * 86400,)).rowcount
+            # hard row cap too, in case of clock weirdness: keep the newest 20k lap summaries
+            out["lap_summaries"] += self.db.execute(
+                "DELETE FROM lap_summary WHERE id NOT IN (SELECT id FROM lap_summary ORDER BY ts DESC LIMIT 20000)").rowcount
+            self.db.commit()
+        keep = cfg.keep_captures if keep_captures is None else keep_captures
+        caps = sorted((self.root / "captures").glob("*.f1cap"), key=lambda p: p.stat().st_mtime, reverse=True)
+        removed = []
+        for i, p in enumerate(caps):
+            age = now - p.stat().st_mtime
+            if age < 600:
+                continue  # possibly still being recorded
+            if i >= keep or age > cfg.capture_days * 86400:
+                try:
+                    p.unlink()
+                    removed.append(p.name)
+                except OSError:
+                    pass
+        if removed:
+            with self.lock:
+                for name in removed:
+                    self.db.execute("DELETE FROM imports WHERE path LIKE ?", (f"%{name}",))
+                self.db.commit()
+        out["captures_removed"] = removed
+        if out["lap_summaries"] or out["radio_lines"] > 500:
+            with self.lock:
+                self.db.execute("VACUUM")  # give the freed pages back to the disk
+        return out
+
     # --- laps -------------------------------------------------------------
     def save_lap(self, uid: int, lap, car_name: str, report: dict | None, input_device: str) -> int | None:
         if not self.can_write():

@@ -38,9 +38,13 @@ class Config:
     record_raw: bool = field(default_factory=lambda: _env("F1E_RECORD_RAW", False, bool))
     # guardrails
     min_free_disk_gb: float = field(default_factory=lambda: _env("F1E_MIN_FREE_GB", 5.5, float))
-    max_data_gb: float = field(default_factory=lambda: _env("F1E_MAX_DATA_GB", 2.0, float))
+    max_data_gb: float = field(default_factory=lambda: _env("F1E_MAX_DATA_GB", 1.0, float))
     max_rss_mb: int = field(default_factory=lambda: _env("F1E_MAX_RSS_MB", 1500, int))
-    keep_sessions: int = field(default_factory=lambda: _env("F1E_KEEP_SESSIONS", 2, int))
+    keep_sessions: int = field(default_factory=lambda: _env("F1E_KEEP_SESSIONS", 5, int))       # full telemetry traces
+    history_days: int = field(default_factory=lambda: _env("F1E_HISTORY_DAYS", 90, int))        # lap summaries (progress)
+    radio_days: int = field(default_factory=lambda: _env("F1E_RADIO_DAYS", 30, int))            # radio / chat log
+    keep_captures: int = field(default_factory=lambda: _env("F1E_KEEP_CAPTURES", 2, int))       # raw .f1cap recordings
+    capture_days: int = field(default_factory=lambda: _env("F1E_CAPTURE_DAYS", 30, int))
     data_dir: Path = ROOT / "data"
     models_dir: Path = ROOT / "models"
     logs_dir: Path = ROOT / "logs"

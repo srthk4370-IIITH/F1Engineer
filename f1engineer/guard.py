@@ -136,12 +136,20 @@ def start_watchdogs(cfg, storage, on_fatal) -> None:
                     on_fatal("memory cap")
                     return
                 if n % 12 == 0:  # every minute
+                    if n % 4320 == 0:  # every 6 h: age limits (history, radio log, recordings)
+                        storage.prune_history()
                     if dir_size_gb(cfg.data_dir) > cfg.max_data_gb:
-                        print("[guard] data/ over cap: pruning to the newest session")
-                        keep = cfg.keep_sessions
-                        cfg.keep_sessions = 1
-                        storage.retention()
-                        cfg.keep_sessions = keep
+                        # biggest first: raw recordings, then detailed traces of older sessions
+                        print(f"[guard] data/ over {cfg.max_data_gb} GB: pruning recordings, then older sessions")
+                        for keep_caps in (1, 0):
+                            storage.prune_history(keep_captures=keep_caps)
+                            if dir_size_gb(cfg.data_dir) <= cfg.max_data_gb:
+                                break
+                        if dir_size_gb(cfg.data_dir) > cfg.max_data_gb:
+                            keep = cfg.keep_sessions
+                            cfg.keep_sessions = 1
+                            storage.retention()
+                            cfg.keep_sessions = keep
                     if disk_free_gb(cfg.data_dir) < cfg.min_free_disk_gb:
                         print(f"[guard] free disk below {cfg.min_free_disk_gb} GB: writes paused")
             except Exception as e:

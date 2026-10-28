@@ -102,6 +102,7 @@ def test_storage_retention_keeps_last_two_sessions():
     from f1engineer.storage import Storage
     cfg = Config()
     cfg.data_dir = Path(tempfile.mkdtemp())
+    cfg.keep_sessions = 2
     st = Storage(cfg)
     for uid in (1, 2, 3):
         st.start_session(uid, "Silverstone", "Time Trial", 2020)
@@ -220,3 +221,28 @@ def test_brain_progress_and_style_from_real_session():
     assert style["style_summary"] and "keyboard" in style["input_devices"]
     ans = " ".join(e.agent.ask("Am I improving?", mode="garage"))   # offline brain routes to get_progress
     assert "session" in ans.lower() or "improv" in ans.lower()
+
+
+def test_prune_history_limits(tmp_path):
+    import os
+    import time as _t
+    from f1engineer.config import Config
+    from f1engineer.storage import Storage
+    cfg = Config()
+    cfg.data_dir = tmp_path
+    st = Storage(cfg)
+    now = _t.time()
+    for i, age_days in enumerate((1, 50, 120)):           # 120-day-old summary must go (90-day history)
+        st.db.execute("INSERT INTO lap_summary(ts,track,session_uid,lap_num,lap_time) VALUES(?,?,?,?,?)",
+                      (now - age_days * 86400, "Silverstone", "s", i, 90.0))
+    st.db.execute("INSERT INTO radio(session_uid,t,role,text) VALUES('s',?, 'engineer', 'old')", (now - 40 * 86400,))
+    st.db.commit()
+    caps = tmp_path / "captures"
+    caps.mkdir()
+    for i, age_days in enumerate((0.1, 2, 3, 45)):         # keep newest 2; 45-day-old one is over the age limit anyway
+        p = caps / f"c{i}.f1cap"
+        p.write_bytes(b"x")
+        os.utime(p, (now - age_days * 86400, now - age_days * 86400))
+    out = st.prune_history()
+    assert out["lap_summaries"] == 1 and out["radio_lines"] == 1
+    assert sorted(p.name for p in caps.glob("*.f1cap")) == ["c0.f1cap", "c1.f1cap"]

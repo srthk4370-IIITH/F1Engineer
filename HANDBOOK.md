@@ -170,3 +170,8 @@ See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, 
 - Offline dashboard: the engineer is available to chat (brain tools + knowledge) without the game. Chat tab renamed "Engineer", thinking indicator.
 - Sentence splitter only splits on punctuation + whitespace (streaming "1." + "434" was read as "1. 434").
 - Real gpt-5.4-mini check: improving / style / strategy (soft->hard L4 in 10 laps: 3.6 s worse than soft->medium L9) / remember goal / practice plan all grounded and sensible; 2.6–8 s in review mode.
+
+### 2026-10-28 — storage caps (user: "put cap on storage")
+- Decision: full traces last 5 sessions (user asked 5; ~1-3 MB/session), lap_summary 90 days + 20k-row cap, radio 30 days, raw captures newest 2 and <=30 days, data/ hard cap 1 GB (was 2). Pruned at engine start, dashboard/import start, every 6 h by the guard; VACUUM after deletes.
+- Bug fixed: the old over-cap guard only pruned sessions, never captures (the big files), so it could never get under the cap. Now: captures first, then sessions.
+- tests/conftest.py forces F1E_LLM=mock: tests were silently hitting the real OpenAI API once a key existed (non-deterministic + paid).

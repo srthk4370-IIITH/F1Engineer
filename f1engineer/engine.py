@@ -131,6 +131,7 @@ class Engine:
         threading.Thread(target=self.run_udp, args=(sock,), name="udp", daemon=True).start()
         threading.Thread(target=self._bg_worker, name="bg", daemon=True).start()
         self._bg_put(brain.backfill, self.store)
+        self._bg_put(self.store.prune_history)
         threading.Thread(target=self._tick_loop, name="tick", daemon=True).start()
 
     def stop(self) -> None:
