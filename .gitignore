@@ -28,3 +28,9 @@ Thumbs.db
 .vscode/
 .idea/
 /scratch/
+
+# personal notes / build logs (not needed to run)
+CLAUDE.md
+prompt.txt
+PLAN.md
+HANDBOOK.md

@@ -301,8 +301,7 @@ uv run python tools/bench_latency.py                                            
 ```
 
 Record your own sessions with `uv run f1engineer record` while driving; tests that need a real recording are skipped
-when none is present. `HANDBOOK.md` is the engineering log (decisions, measurements, gotchas); `PLAN.md` is the
-original build plan.
+when none is present.
 
 **Ideas / not done yet:** confirmation of the F1 2021-25 layouts on real games; corner name tables for more tracks
 (only Silverstone has names, others show "Turn N"); tyre-temperature based setup advice.
