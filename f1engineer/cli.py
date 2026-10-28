@@ -2,7 +2,7 @@
 
   run        start the engineer now (telemetry + radio + dashboard)
   watch      background watcher: auto-start with the game (what autostart launches)
-  autostart  on|off   start the watcher at Windows logon (Startup-folder shortcut)
+  autostart  on|off   start the watcher at login (Windows Startup, Linux XDG autostart, macOS LaunchAgent)
   udp        show / enable / restore the game's UDP telemetry config
   dashboard  review stored laps any time (no game needed)
   import     analyse a recorded .f1cap into the lap database

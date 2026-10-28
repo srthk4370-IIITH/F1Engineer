@@ -17,7 +17,7 @@ import psutil
 from f1engineer.config import ROOT, Config
 from f1engineer.guard import InstanceLock, lower_priority, setup_logging
 
-GAME_RE = re.compile(r"^f1_?(20[1-3]\d|2\d)(_dx12)?\.exe$", re.I)  # F1_2020.exe, F1_2020_dx12.exe, F1_22.exe, F1_24.exe ...
+GAME_RE = re.compile(r"^f1_?(20[1-3]\d|2\d)(_dx12)?(\.exe)?$", re.I)  # F1_2020.exe, F1_2020_dx12.exe, F1_22.exe, F1_24.exe ...
 GRACE_S = 45
 
 
@@ -94,11 +94,43 @@ STARTUP_NAME = "F1 Engineer Watcher.lnk"
 
 
 def startup_dir() -> str:
-    return os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Start Menu\Programs\Startup")
+    if sys.platform == "win32":
+        return os.path.join(os.environ["APPDATA"], r"Microsoft\Windows\Start Menu\Programs\Startup")
+    if sys.platform == "darwin":
+        return os.path.expanduser("~/Library/LaunchAgents")
+    return os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.expanduser("~/.config")), "autostart")
+
+
+def _autostart_posix(enable: bool) -> str:
+    """Linux: XDG autostart .desktop entry. macOS: per-user LaunchAgent. Both trivially removable."""
+    d = startup_dir()
+    path = os.path.join(d, "com.f1engineer.watcher.plist" if sys.platform == "darwin" else "f1engineer-watcher.desktop")
+    if not enable:
+        if os.path.exists(path):
+            os.remove(path)
+        return f"removed {path}"
+    os.makedirs(d, exist_ok=True)
+    if sys.platform == "darwin":
+        body = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.f1engineer.watcher</string>
+<key>ProgramArguments</key><array><string>{sys.executable}</string><string>-m</string><string>f1engineer</string><string>watch</string></array>
+<key>WorkingDirectory</key><string>{ROOT}</string><key>RunAtLoad</key><true/>
+</dict></plist>
+"""
+    else:
+        body = (f"[Desktop Entry]\nType=Application\nName=F1 Engineer watcher\nExec=sh -c 'cd \"{ROOT}\" && "
+                f"\"{sys.executable}\" -m f1engineer watch'\nX-GNOME-Autostart-enabled=true\nNoDisplay=true\n")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(body)
+    return f"created {path}"
 
 
 def autostart(enable: bool) -> str:
-    """Add/remove a Startup-folder shortcut (per-user, no admin, trivially removable)."""
+    """Add/remove a per-user login item (Windows Startup shortcut, Linux XDG autostart, macOS LaunchAgent)."""
+    if sys.platform != "win32":
+        return _autostart_posix(enable)
     link = os.path.join(startup_dir(), STARTUP_NAME)
     if not enable:
         if os.path.exists(link):
@@ -118,5 +150,9 @@ def start_detached() -> None:
     exe = sys.executable
     if exe.lower().endswith("python.exe") and os.path.exists(exe[:-10] + "pythonw.exe"):
         exe = exe[:-10] + "pythonw.exe"
-    flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | CREATE_NO_WINDOW
-    subprocess.Popen([exe, "-m", "f1engineer", "watch"], cwd=str(ROOT), creationflags=flags, close_fds=True)
+    if sys.platform == "win32":
+        flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | CREATE_NO_WINDOW
+        subprocess.Popen([exe, "-m", "f1engineer", "watch"], cwd=str(ROOT), creationflags=flags, close_fds=True)
+    else:
+        subprocess.Popen([exe, "-m", "f1engineer", "watch"], cwd=str(ROOT), start_new_session=True, close_fds=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

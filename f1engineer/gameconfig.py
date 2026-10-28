@@ -16,10 +16,21 @@ UDP_RE = re.compile(r"<udp\s[^>]*?/>")
 
 
 def find_configs() -> list[Path]:
-    docs = Path.home() / "Documents" / "My Games"
-    if not docs.exists():
-        return []
-    return sorted(p for p in docs.glob("F1*/hardwaresettings/hardware_settings_config.xml"))
+    """Windows: Documents/My Games/F1 */... ; Linux (Steam Proton): inside each game's Wine prefix."""
+    pattern = "F1*/hardwaresettings/hardware_settings_config.xml"
+    roots = [Path.home() / "Documents" / "My Games"]
+    for steam in (Path.home() / ".steam" / "steam", Path.home() / ".local" / "share" / "Steam"):
+        compat = steam / "steamapps" / "compatdata"
+        if compat.is_dir():
+            roots += compat.glob("*/pfx/drive_c/users/steamuser/Documents/My Games")
+    seen, out = set(), []
+    for r in roots:
+        if r.is_dir():
+            for p in r.glob(pattern):
+                if p.resolve() not in seen:
+                    seen.add(p.resolve())
+                    out.append(p)
+    return sorted(out)
 
 
 def read_udp(path: Path) -> dict | None:

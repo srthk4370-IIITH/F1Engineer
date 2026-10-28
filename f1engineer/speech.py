@@ -9,6 +9,7 @@ and the game's own UDP button state forwarded by the core.
 from __future__ import annotations
 
 import ctypes
+import os
 import re
 import multiprocessing as mp
 import queue
@@ -80,14 +81,13 @@ class TTS:
 
 def _register_cuda_dlls() -> None:
     """pip-installed CUDA libs (nvidia-cublas-cu12 / nvidia-cudnn-cu12) live in site-packages/nvidia/*/bin."""
-    import os
     import site
     for sp in site.getsitepackages():
         root = os.path.join(sp, "nvidia")
         if os.path.isdir(root):
             for sub in os.listdir(root):
                 b = os.path.join(root, sub, "bin")
-                if os.path.isdir(b):
+                if os.path.isdir(b) and hasattr(os, "add_dll_directory"):   # Windows; Linux finds the .so via rpath
                     os.add_dll_directory(b)
                     os.environ["PATH"] = b + os.pathsep + os.environ.get("PATH", "")
 
@@ -228,7 +228,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     import sounddevice as sd
     try:
         import psutil
-        psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS)
+        psutil.Process().nice(psutil.BELOW_NORMAL_PRIORITY_CLASS if os.name == "nt" else 10)
     except Exception:
         pass
     log = lambda s: outq.put(("log", s))  # noqa: E731
@@ -383,7 +383,6 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
 
     threading.Thread(target=gpu_watch, daemon=True).start()
 
-    import os
     parent = os.getppid()
     while True:
         try:

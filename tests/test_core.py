@@ -246,3 +246,38 @@ def test_prune_history_limits(tmp_path):
     out = st.prune_history()
     assert out["lap_summaries"] == 1 and out["radio_lines"] == 1
     assert sorted(p.name for p in caps.glob("*.f1cap")) == ["c0.f1cap", "c1.f1cap"]
+
+
+def test_format_layouts_match_official_sizes():
+    from f1engineer.telemetry import formats as F
+    for fmt, sizes in F.OFFICIAL.items():
+        lay = F._layout(fmt)
+        for pid, size in sizes.items():
+            assert lay[pid][0].itemsize == size, (fmt, pid)
+
+
+@pytest.mark.skipif(not REAL.exists(), reason="real capture not present")
+def test_real_session_reencoded_as_f1_24_gives_same_laps():
+    """Inverse-encode the real F1 2020 session as F1 24 packets: the engineer must see exactly the same laps."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+    from encode_format import Encoder
+    from f1engineer.config import Config
+    from f1engineer.engine import Engine
+    from f1engineer.storage import Storage
+    from f1engineer.telemetry.capture import read_capture
+
+    def run(fmt):
+        cfg = Config()
+        cfg.data_dir = Path(tempfile.mkdtemp())
+        e = Engine(cfg, storage=Storage(cfg))
+        e.speech.say = lambda *a: None
+        enc = Encoder(fmt) if fmt != 2020 else None
+        for _, d in read_capture(REAL):
+            for b in (enc.encode(d) if enc else [d]):
+                e.feed(b)
+        e.drain()
+        return e
+    a, b = run(2020), run(2024)
+    key = lambda e: [(round(r.lap_time, 3), r.input_device, r.mistakes, [c["corner"] for c in r.losses]) for r in e.reports]  # noqa: E731
+    assert key(a) == key(b) and b.game == "F1 24" and b.stats["parse_errors"] == 0

@@ -5,8 +5,9 @@ radio like a real pit wall, tells you exactly where you lost time and why, coach
 just *talk* to it: "Where am I losing time?", "Am I improving?", "What's my driving style?", "Will a one-stop on
 lap 12 work?".
 
-Built and tested on **F1 2020** on Windows. Telemetry analysis, speech recognition and the voice run locally on your
-PC; the conversational brain uses OpenAI (optional: without a key a built-in offline brain still runs the radio).
+Works with **F1 2020 through F1 25** (including F1 25's 2026 season update) on Windows, with Linux and macOS support.
+Telemetry analysis, speech recognition and the voice run locally on your PC; the conversational brain uses OpenAI
+(optional: without a key a built-in offline brain still runs the radio).
 
 ![Dashboard: lap comparison with synced telemetry, track map, corner table](docs/dashboard.png)
 
@@ -42,8 +43,8 @@ PC; the conversational brain uses OpenAI (optional: without a key a built-in off
 
 | | |
 |---|---|
-| OS | **Windows 10 / 11** (the keyboard/controller push-to-talk and autostart are Windows-only) |
-| Game | **F1 2020** (fully supported). **F1 2021**: set *UDP Format* to **2020** in the game's telemetry settings. F1 22 and newer use a different packet format that is not supported yet. |
+| OS | **Windows 10 / 11** (everything). **Linux** (incl. Steam Proton) and **macOS** also work, see [Compatibility](#compatibility-and-adaptation). |
+| Game | **F1 2020, F1 2021, F1 22, F1 23, F1 24, F1 25** (and its 2026 season update), PC or console. |
 | Hardware | Microphone and speakers/headset. ~1.5 GB free disk (+2 GB with NVIDIA GPU libraries). An NVIDIA GPU is optional (faster speech recognition when it's free; the CPU works fine). |
 | Optional | An **OpenAI API key** for the conversational engineer ([how to get one](#openai-api-key)). |
 
@@ -107,7 +108,7 @@ The wizard does this for you on PC. To do it by hand, in the game go to
 | UDP IP Address | `127.0.0.1` |
 | UDP Port | `20777` |
 | UDP Send Rate | 60Hz |
-| UDP Format | 2020 |
+| UDP Format | your game's own year (any of 2020-2025 works) |
 
 Or from the command line (with the game closed): `uv run f1engineer udp enable`. Undo with `uv run f1engineer udp restore`.
 
@@ -138,7 +139,7 @@ your own laps: `uv run python tools/pick_model.py gpt-5.4-mini gpt-6-luna` (add 
 
 | How | Command |
 |---|---|
-| **Automatic** (recommended) | `uv run f1engineer autostart on`, then just launch the game. The engineer starts with it and stops 45 s after it closes. |
+| **Automatic** (recommended) | `uv run f1engineer autostart on|off` | Start/stop the background watcher at login (Windows, Linux, macOS) |`, then just launch the game. The engineer starts with it and stops 45 s after it closes. |
 | Manual | `uv run f1engineer run`, then start the game. Opens the dashboard in your browser. |
 | Review laps / chat without the game | `uv run f1engineer dashboard` |
 
@@ -168,7 +169,7 @@ opens and closes. Things to try:
 | `uv run f1engineer doctor` | Health check: dependencies, models, key, microphone, GPU, game config, ports, autostart |
 | `uv run f1engineer run` | Start the engineer now (telemetry + radio + dashboard) |
 | `uv run f1engineer dashboard` | Review stored laps and chat, no game needed (hands over to the live engineer if the game starts) |
-| `uv run f1engineer autostart on\|off` | Start/stop the background watcher at Windows logon |
+| `uv run f1engineer autostart on|off` | Start/stop the background watcher at login (Windows, Linux, macOS) |\|off` | Start/stop the background watcher at Windows logon |
 | `uv run f1engineer watch [--detach]` | Run the watcher yourself |
 | `uv run f1engineer udp [show\|enable\|restore]` | Inspect, enable or restore the game's telemetry config |
 | `uv run f1engineer record` | Record raw telemetry to `data/captures/*.f1cap` |
@@ -199,6 +200,26 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 
 ---
 
+## Compatibility and adaptation
+
+Nothing to configure: the engineer works out what it's talking to and adapts.
+
+- **Game.** Every packet says which format it uses; the matching reader is picked automatically (F1 2020 natively,
+  2021-2025 converted into one internal shape). The game is named on the dashboard and the engineer uses that game's
+  knowledge (car generation, handling, setup ranges, 2026 rules). Each layout is checked against the official packet
+  sizes; if a game update ever changes one, it's logged once and skipped instead of misread.
+  F1 2020 is tested with real sessions; newer games are built from the official specs and verified by converting a
+  real session into each format (`tools/encode_format.py`). Real-game reports welcome.
+- **OS.** Windows: everything. Linux: engine, voice, dashboard, autostart (XDG) and game detection under Steam
+  Proton; keyboard push-to-talk needs X11 (on Wayland use a controller button). macOS: no native F1 game, so play
+  on a console or another PC and point its UDP at the Mac; keyboard push-to-talk needs Accessibility permission.
+  Controller push-to-talk always works because the game reports its buttons in the telemetry.
+- **Your driving.** Keyboard or controller/wheel is detected from the inputs; TC and ABS from the car. With ABS on
+  there's no lock-up coaching, with full TC no wheelspin nagging, and keyboard drivers get keyboard-specific instructions.
+- **Your level.** From your last laps (consistency, mistakes, gap to your reference) you're rated learning, developing
+  or quick. Learners get one fix at a time and more encouragement; quick drivers get terse hundredths-level calls
+  and sector deltas. It re-evaluates every lap, so it moves with you.
+
 ## Storage, privacy and guardrails
 
 - **Everything stays in the project folder:** `data/` (laps, history, recordings), `models/` (speech models), `logs/`, `.env`. All gitignored.
@@ -213,12 +234,12 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 
 | Problem | Fix |
 |---|---|
-| No radio at all | `uv run f1engineer doctor`. Check UDP is enabled in the game (format 2020) and nothing else is using port 20777. |
+| No radio at all | `uv run f1engineer doctor`. Check UDP telemetry is on in the game (IP 127.0.0.1, port 20777) and nothing else is using port 20777. |
 | It doesn't hear me | You should hear a beep when you press push-to-talk. `doctor` shows which microphone is used; virtual mics (phone-webcam apps, Stereo Mix) record silence. Pick your real mic in `setup` or set `F1E_MIC`. Check `logs/engine.log` for "PTT released ... level ... dBFS". |
 | Shift does something in the game | Choose another key in `setup` (or `F1E_PTT_KEY`), or use the controller button. |
 | Answers are generic / "offline" | No or invalid OpenAI key or no credit: `doctor`, then re-run `setup`. |
 | "UDP port 20777 is busy" | Another telemetry app (or a second engineer) is running. Close it. |
-| Newer F1 game, nothing happens | F1 22+ formats are not supported yet. F1 2021: set UDP Format to 2020. |
+| Newer F1 game, nothing happens | `doctor` and `logs/engine.log`: a line `[telemetry] F1 xx: packet N is X bytes, expected Y` means a game update changed a layout; please open an issue with that line. |
 | GPU libraries vanished | You ran plain `uv sync`; run `uv sync --extra gpu`. |
 | Logs | `logs/engine.log`, `logs/watcher.log` (rotating, small) |
 
@@ -251,7 +272,7 @@ flowchart LR
 
 ```
 f1engineer/
-  telemetry/     packet formats (2020), capture file format
+  telemetry/     packet formats (2020 native; 2021-2025 adapters), capture file format
   state/         session tracker (laps, sectors, ghosts, flashbacks)
   analysis/      lap maths, coaching reports, setup advisor, strategy, track map, ghost tracking
   coaching.py    live in-lap calls          radio.py   message templates + scheduler
@@ -261,7 +282,8 @@ f1engineer/
   engine.py      wires it all together      web/       dashboard
   storage.py     SQLite + traces + retention  guard.py   resource guardrails
   watcher.py     start with the game        onboarding.py  setup wizard + doctor
-tools/           record, replay, latency benchmark, model picker
+  adapt.py       skill tier, assists, input -> coaching style    platform_info.py  OS capabilities
+tools/           record, replay, convert to other game formats, latency benchmark, model picker
 sim/             synthetic 20-car race generator for testing without the game
 tests/
 ```
@@ -282,8 +304,8 @@ Record your own sessions with `uv run f1engineer record` while driving; tests th
 when none is present. `HANDBOOK.md` is the engineering log (decisions, measurements, gotchas); `PLAN.md` is the
 original build plan.
 
-**Ideas / not done yet:** packet formats for F1 22 and newer; corner name tables for more tracks (only Silverstone has
-names, others show "Turn N"); tyre-temperature based setup advice.
+**Ideas / not done yet:** confirmation of the F1 2021-25 layouts on real games; corner name tables for more tracks
+(only Silverstone has names, others show "Turn N"); tyre-temperature based setup advice.
 
 ---
 

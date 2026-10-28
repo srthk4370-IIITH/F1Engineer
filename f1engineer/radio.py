@@ -106,14 +106,19 @@ TIPS = [  # cause fragment -> what to do next lap
 ]
 
 
-def next_lap_messages(rep, advice: list[dict], said: set[str]) -> list[Message]:
+def next_lap_messages(rep, advice: list[dict], said: set[str], adapt: dict | None = None) -> list[Message]:
     """What to work on next lap (biggest loss, turned into an instruction) + an occasional setup idea."""
+    from f1engineer.adapt import KEYBOARD_TIPS
     now = CLOCK()
     msgs = []
+    adapt = adapt or {}
     for c in rep.losses[:1]:
         if c["time_loss"] < 0.08:
             break
-        tip = next((t for frag, t in TIPS for cause in c["causes"] if frag in cause), None)
+        tip = None
+        if adapt.get("keyboard"):   # on/off inputs need different instructions
+            tip = next((t for frag, t in KEYBOARD_TIPS.items() for cause in c["causes"] if frag in cause), None)
+        tip = tip or next((t for frag, t in TIPS for cause in c["causes"] if frag in cause), None)
         if tip:
             msgs.append(Message(4, now, f"Next lap, focus on {c['corner']}: {tip}.", "straight", 120, "focus"))
     for a in advice[:1]:

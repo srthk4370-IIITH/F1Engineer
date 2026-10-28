@@ -67,16 +67,17 @@ def main() -> None:
     cfgs = G.find_configs()
     if not cfgs:
         print("  No F1 config found in Documents/My Games. In the game: Game Options > Settings > Telemetry Settings >\n"
-              "  UDP Telemetry: On, UDP IP 127.0.0.1, Port 20777, Send Rate 60Hz, UDP Format 2020 (if offered).")
+              "  UDP Telemetry: On, UDP IP 127.0.0.1, Port 20777, Send Rate 60Hz, UDP Format: your game's own year.")
     for p in cfgs:
         game = p.parent.parent.name
         udp = G.read_udp(p)
         print(f"  {game}: {udp}")
         if udp and udp.get("enabled") != "true" and _yes(f"  Enable UDP telemetry for {game}? (a backup is made first)"):
             print("   ", G.enable_udp(p, cfg.udp_port))
-        if udp and udp.get("format") not in (None, "2020"):
-            print(f"  Note: {game} sends format {udp.get('format')}. This version fully supports format 2020; "
-                  "if your game offers 'UDP Format: 2020' in its telemetry settings, pick it.")
+        from f1engineer.telemetry.formats import SUPPORTED
+        if udp and udp.get("format") and int(udp["format"]) not in SUPPORTED:
+            print(f"  Note: {game} sends format {udp.get('format')}, which this version can't read yet. "
+                  f"Supported: {', '.join(map(str, SUPPORTED))} (pick one in the game's telemetry settings if offered).")
 
     # 2. OpenAI
     print("""

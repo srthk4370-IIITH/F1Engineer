@@ -132,7 +132,8 @@ class LiveCoach:
 
     def on_sector(self, sector: int) -> None:
         """Sector boundary (sector = index of the sector just started)."""
-        if sector not in (1, 2) or self.status != FLYING or self.gone_called or self.eng.tr.is_race:
+        if sector not in (1, 2) or self.status != FLYING or self.gone_called or self.eng.tr.is_race \
+                or not self.eng.adapt.get("sectors", True):
             return
         d = self.delta_now()
         if d is None or abs(d) < 0.1:
@@ -170,7 +171,8 @@ class LiveCoach:
             return
         name, sl = c.name, self.sass
         causes = coach._causes(m)
-        if m.lockup:
+        ad = eng.adapt
+        if m.lockup and ad.get("coach_lockups", True):
             txt = pick(f"Lock-up into {name}.", f"Locked the fronts at {name}.", f"Lock-up, {name}.")
             txt += " " + pick("Ease the brake pressure as you turn.", "Brake a touch earlier, then release smoothly.",
                               "Less pedal at the end of the braking zone.") + radio.sass("lockup", sl)
@@ -178,10 +180,10 @@ class LiveCoach:
             txt = pick(f"Off at {name}.", f"Wide at {name}, all four over.", f"Track limits at {name}.") + radio.sass("offtrack", sl)
         elif eng.tr.is_race:
             return  # in a race only mistakes are worth the airtime
-        elif m.time_loss > self.LOSS_CALL_S:
+        elif m.time_loss > ad.get("loss_call_s", self.LOSS_CALL_S):
             cause = next((x for x in causes if "track" not in x), None)
             txt = f"{name}, {radio.fmt_d(m.time_loss)} lost" + (f": {cause}." if cause else ".") + radio.sass("loss", sl)
-        elif m.time_loss < -self.GAIN_CALL_S and random.random() < 0.6:
+        elif m.time_loss < -self.GAIN_CALL_S and random.random() < ad.get("praise", 0.6):
             txt = pick(f"Good job at {name}, {radio.fmt_d(m.time_loss)} up there.",
                        f"{name} was mega. {radio.fmt_d(m.time_loss).capitalize()} gained.", f"Nice through {name}. Keep doing that.")
         else:

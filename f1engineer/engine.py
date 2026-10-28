@@ -10,7 +10,7 @@ import traceback
 
 import numpy as np
 
-from f1engineer import brain, radio
+from f1engineer import adapt, brain, radio
 from f1engineer.coaching import LiveCoach
 from f1engineer.analysis import coach, lapmath as LM, setup_advisor, strategy
 from f1engineer.config import Config
@@ -18,9 +18,8 @@ from f1engineer.llm import knowledge
 from f1engineer.llm.agent import Agent, MockProvider
 from f1engineer.state.tracker import SessionTracker
 from f1engineer.storage import Storage
-from f1engineer.telemetry import packets_2020 as P
+from f1engineer.telemetry import formats, packets_2020 as P
 
-PARSERS = {2020: P.parse}
 
 
 class NullSpeech:
@@ -56,6 +55,8 @@ class Engine:
         self.last_calls: set[str] = set()
         self.input_device = "unknown"
         self.unsupported_formats: set[int] = set()
+        self.parsers = formats.Parsers()
+        self.game = None          # e.g. "F1 24", from the packets
         self.stats = {"packets": 0, "parse_errors": 0, "last_lap_analysis_ms": 0.0}
         self._bg: queue.Queue = queue.Queue(maxsize=200)
         self._stop = threading.Event()
@@ -64,6 +65,7 @@ class Engine:
         self.listeners: list = []  # callables(event: dict) for the dashboard websocket
         self.coach = LiveCoach(self)
         self._tips_said: set[str] = set()
+        self.adapt: dict = {}     # adapt.profile(): game, OS, input, assists, skill tier
         self._unanalysed = None  # first lap of a TT session, waiting for a ghost reference
         tr = self.tr
         tr.on("session_start", self._on_session)
@@ -79,17 +81,22 @@ class Engine:
         if len(data) < 24:
             return
         fmt = int.from_bytes(data[0:2], "little")
-        parse = PARSERS.get(fmt)
+        parse = self.parsers.get(fmt)
         if parse is None:
             if fmt not in self.unsupported_formats:
                 self.unsupported_formats.add(fmt)
-                print(f"[engine] packet format {fmt} not supported yet (set the game's UDP format to 2020 if available)")
+                print(f"[engine] packet format {fmt} not supported (supported: {', '.join(map(str, formats.SUPPORTED))}; "
+                      "pick one of those as the game's UDP Format)")
             return
         r = parse(data)
         if r is None:
             self.stats["parse_errors"] += 1
             return
         pid, p = r
+        if p is None:
+            return  # absorbed into a later packet (e.g. MotionEx / CarDamage on newer games)
+        if self.game is None or self.stats["packets"] % 500 == 0:
+            self.game = self.parsers.game(fmt)
         try:
             self.tr.on_packet(pid, p, wall)
             if pid == 2 and self.tr.lapdata is not None:
@@ -240,12 +247,13 @@ class Engine:
         self.reports.append(rep)
         del self.reports[:-20]
         self.advice = setup_advisor.advise(self.reports[-5:], tr.setup, self.input_device, lap.assists)
+        self.adapt = adapt.profile(self)
         is_best = lap.lap_time < self.ref["time"] and (not lap.invalid or "best" in self.ref["label"])
         if self.coach.was_out_lap(lap.lap_num):
             self._say(f"Out lap done, {radio.fmt_t(lap.lap_time)}. Tyres are in, now we push.", 3)
         elif tr.is_time_trial or not tr.is_race:
             self.sched.push(radio.tt_lap_messages(rep, self.cfg.sass, is_best))
-            self.sched.push(radio.next_lap_messages(rep, self.advice, self._tips_said))
+            self.sched.push(radio.next_lap_messages(rep, self.advice, self._tips_said, self.adapt))
             self.sched.push([radio.Message(6, radio.CLOCK(), radio.lap_debrief_text(rep, self.advice),
                                            "garage", 900, "garage_debrief")])
             if not isinstance(self.agent.provider, MockProvider):
@@ -412,7 +420,9 @@ class Engine:
         """Compact live snapshot sent with every question: simple questions need no tool round trip."""
         tr = self.tr
         best = min((r.lap_time for r in self.reports), default=None)
-        s = (f"driver_state={'driving' if self.mode() == 'radio' else 'parked/paused'}; "
+        a = self.adapt or {}
+        s = (f"game={self.game}; os={a.get('os')}; skill_tier={a.get('tier')} ({a.get('style')}); "
+             f"driver_state={'driving' if self.mode() == 'radio' else 'parked/paused'}; "
              f"track={tr.track}; mode={tr.session_type}; laps_analysed={len(self.reports)}; best_analysed={best}; "
              f"reference={self.ref['label'] + ' ' + str(round(self.ref['time'], 3)) if self.ref else 'none'}; "
              f"input={self.input_device}; assists={self.reports[-1].assists if self.reports else {}}")
@@ -564,7 +574,8 @@ class Engine:
     # ---- dashboard state -----------------------------------------------------------
     def live_state(self) -> dict:
         tr = self.tr
-        s = {"connected": time.time() - tr.last_packet_wall < 3, "track": tr.track if tr.session else None,
+        s = {"connected": time.time() - tr.last_packet_wall < 3, "track": tr.track if tr.session else None, "game": self.game,
+             "adapt": self.adapt,
              "mode": tr.session_type if tr.session else None, "input_device": self.input_device, "stats": self.stats,
              "reference": None if not self.ref else {"label": self.ref["label"], "time": self.ref["time"]}}
         if tr.telemetry is not None and tr.lapdata is not None:
