@@ -20,8 +20,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-speech = []
-llm = []
 gpu = [
     "nvidia-cublas-cu12>=12.9.2.10",
     "nvidia-cudnn-cu12>=9,<10",
@@ -45,7 +43,12 @@ build-backend = "hatchling.build"
 packages = ["f1engineer"]
 
 [tool.ruff]
-line-length = 110
+line-length = 120
+extend-exclude = ["scratch", "data", "models"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]
+ignore = ["E741", "E501"]   # short maths names (l, L) are deliberate; long lines are mostly radio/prompt text
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

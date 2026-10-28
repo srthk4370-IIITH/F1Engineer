@@ -29,7 +29,7 @@ def _runs(mask: np.ndarray) -> list[tuple[int, int]]:
 def style_metrics(rs: dict, issues: list[dict] | None = None) -> dict:
     """rs = lap resampled on the 2 m grid. Returns per-lap style numbers."""
     thr, brk, steer, spd = rs["throttle"], rs["brake"], rs["steer"], rs["speed"]
-    n, km = len(thr), len(thr) * LM.GRID_M / 1000
+    km = len(thr) * LM.GRID_M / 1000
     zones = [(s, e) for s, e in _runs(brk > 0.1) if e - s >= 5]
     ramps, peaks, trail = [], [], []
     for s, e in zones:

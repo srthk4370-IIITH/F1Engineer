@@ -86,6 +86,8 @@ def main() -> None:
     2. Click "Create new secret key", give it a name, copy it (starts with "sk-").
     3. Add a few dollars of credit: https://platform.openai.com/settings/organization/billing
        (a typical session costs well under $0.05).
+  What is sent to OpenAI: your typed/spoken questions (as text) and lap numbers/summaries the engineer looks up.
+  Never audio, never files. Telemetry analysis, speech recognition and the voice all run on this PC.
   Press Enter to skip: the engineer then uses its offline template brain (radio calls still work).""")
     cur = env.get("OPENAI_API_KEY", "")
     key = getpass.getpass(f"  Paste key{' (Enter keeps the current one)' if cur else ''}: ").strip() or cur
@@ -101,7 +103,8 @@ def main() -> None:
     env["F1E_SASS"] = _ask("  Sass level 0 (strictly professional) .. 3 (roasts you)", env.get("F1E_SASS", "2"))
     for k, (v, desc) in VOICES.items():
         print(f"    {k}. {desc} ({v})")
-    choice = _ask("  Voice", "1")
+    cur_voice = next((k for k, (v, _) in VOICES.items() if v == env.get("F1E_TTS_VOICE")), "1")
+    choice = _ask("  Voice", cur_voice)
     env["F1E_TTS_VOICE"] = VOICES.get(choice, VOICES["1"])[0]
     env["F1E_PTT_KEY"] = _ask("  Push-to-talk keyboard key (hold while speaking)", env.get("F1E_PTT_KEY", "shift"))
     env["F1E_PTT_BUTTON"] = _ask("  Push-to-talk controller button (A,B,X,Y,LB,RB,LS,RS,VIEW,DPAD_*) - pick one you\n"
@@ -124,6 +127,25 @@ def main() -> None:
 
     # 5. audio
     print("\n[5/6] Audio check")
+    try:
+        import sounddevice as sd
+        from f1engineer.speech import input_devices
+        print(f"  Speakers (Windows default): {sd.query_devices(kind='output')['name']}")
+        mics = input_devices()
+        default = sd.query_devices(kind="input")["name"]
+        print("  Microphones:")
+        for i, m in enumerate(mics, 1):
+            print(f"    {i}. {m}{'   <- Windows default' if m == default else ''}")
+        print("  Tip: virtual mics (phone-webcam apps, 'Stereo Mix') are silent or wrong; pick the one you talk into.")
+        cur = env.get("F1E_MIC", "")
+        pick = _ask("  Which microphone? (number, Enter = " + (f"keep '{cur}'" if cur else "Windows default") + ")", "")
+        if pick.isdigit() and 1 <= int(pick) <= len(mics):
+            env["F1E_MIC"] = mics[int(pick) - 1]
+            _write_env(env)
+            cfg = Config()
+        print(f"  Using: {env.get('F1E_MIC') or default}")
+    except Exception as e:
+        print(f"  No audio device found: {e!r}")
     if _yes("  Play a test radio message and record 3 s from your mic?"):
         _audio_test(cfg)
 
@@ -136,10 +158,11 @@ def main() -> None:
         print("   Watcher running now.")
     print(f"""
 Done. Start an F1 session and the engineer comes on the radio.
-  Manual start:   uv run f1engineer run
-  Dashboard:      http://127.0.0.1:{cfg.web_port}
-  Health check:   uv run f1engineer doctor
-  Undo autostart: uv run f1engineer autostart off
+  Talk to him:        hold {env.get('F1E_PTT_KEY', 'shift').upper()} (or {env.get('F1E_PTT_BUTTON', 'RS')} on a controller), speak, release.
+  Manual start:       uv run f1engineer run
+  Review laps/chat:   uv run f1engineer dashboard   (http://127.0.0.1:{cfg.web_port}, works without the game)
+  Health check:       uv run f1engineer doctor
+  Undo autostart:     uv run f1engineer autostart off
   Restore game config: uv run f1engineer udp restore
 """)
 
@@ -154,11 +177,15 @@ def _audio_test(cfg) -> None:
         sd.play(a, tts.sr)
         sd.wait()
         print("  Say something like 'Where am I losing time?' now...")
-        rec = sd.rec(int(3 * 16000), samplerate=16000, channels=1, dtype="float32")
+        from f1engineer.speech import pick_input
+        rec = sd.rec(int(3 * 16000), samplerate=16000, channels=1, dtype="float32", device=pick_input(cfg.mic))
         sd.wait()
         t = time.perf_counter()
+        level = 20 * np.log10(float(np.sqrt(np.mean(rec[:, 0] ** 2))) + 1e-9)
         txt = STT(cfg).transcribe(rec[:, 0])
-        print(f"  Heard: {txt!r} ({(time.perf_counter() - t) * 1000:.0f} ms)")
+        print(f"  Heard: {txt!r} ({(time.perf_counter() - t) * 1000:.0f} ms, mic level {level:.0f} dBFS)")
+        if level < -55:
+            print("  Your mic is almost silent: check the Windows default input device and that it isn't muted.")
     except Exception as e:
         print(f"  Audio test failed: {e!r}")
 
@@ -180,7 +207,24 @@ def doctor() -> None:
     for m in ("tiny.en", "base.en"):
         print(f"[{ok((cfg.models_dir / 'whisper' / m / 'model.bin').exists())}] whisper {m}")
     env = _read_env()
-    print(f"[{ok(bool(env.get('OPENAI_API_KEY')))}] OPENAI_API_KEY in .env (optional; offline brain otherwise)")
+    print(f"[{ok(bool(env.get('OPENAI_API_KEY')))}] OPENAI_API_KEY in .env (optional; offline brain otherwise), "
+          f"model {env.get('OPENAI_MODEL', 'gpt-5.4-mini')}")
+    try:
+        import sounddevice as sd
+        from f1engineer.speech import pick_input
+        dev = pick_input(cfg.mic)
+        name = sd.query_devices(dev if dev is not None else sd.default.device[0])["name"]
+        virtual = any(v in name.lower() for v in ("iriun", "droidcam", "stereo mix", "virtual", "obs"))
+        print(f"[{'WARN' if virtual or (cfg.mic and dev is None) else 'OK  '}] microphone: {name}"
+              + (" (looks virtual: set F1E_MIC or run setup to pick your real mic)" if virtual else "")
+              + (f" ('{cfg.mic}' not found)" if cfg.mic and dev is None else ""))
+    except Exception as e:
+        print(f"[FAIL] microphone: {e!r}")
+    try:
+        from f1engineer.speech import _gpu_ok
+        print(f"[INFO] GPU speech recognition {'available' if _gpu_ok(cfg) else 'not available (CPU is used, fine)'}")
+    except Exception:
+        pass
     from f1engineer import gameconfig as G
     for p in G.find_configs():
         u = G.read_udp(p) or {}

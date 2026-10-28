@@ -166,6 +166,29 @@ class STT:
         return " ".join(s.text.strip() for s in segs).strip()
 
 
+def input_devices() -> list[str]:
+    """Microphone names (MME host API: it resamples to our 16 kHz on any device), without duplicates."""
+    import sounddevice as sd
+    mme = next((i for i, h in enumerate(sd.query_hostapis()) if h["name"] == "MME"), None)
+    out = []
+    for d in sd.query_devices():
+        if d["max_input_channels"] > 0 and (mme is None or d["hostapi"] == mme) and "Mapper" not in d["name"] \
+                and d["name"] not in out:
+            out.append(d["name"])
+    return out
+
+
+def pick_input(name: str):
+    """Device index whose name contains `name` (case-insensitive), preferring MME; None = system default."""
+    if not name:
+        return None
+    import sounddevice as sd
+    mme = next((i for i, h in enumerate(sd.query_hostapis()) if h["name"] == "MME"), None)
+    hits = [(d["hostapi"] != mme, i) for i, d in enumerate(sd.query_devices())
+            if d["max_input_channels"] > 0 and name.lower() in d["name"].lower()]
+    return min(hits)[1] if hits else None
+
+
 class XInput:
     """Minimal XInput poller (Windows). Returns pressed button bitmask, 0 if no pad."""
 
@@ -300,9 +323,13 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     threading.Thread(target=player, daemon=True).start()
     mic = None
     try:
-        mic = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=mic_cb, blocksize=1600)
+        dev = pick_input(cfg.mic)
+        if cfg.mic and dev is None:
+            log(f"microphone '{cfg.mic}' not found: using the Windows default")
+        mic = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=mic_cb, blocksize=1600, device=dev)
         mic.start()
-        log(f"microphone: {sd.query_devices(kind='input')['name']}; PTT key '{cfg.ptt_key}', pad button {cfg.ptt_game_button}")
+        name = sd.query_devices(dev if dev is not None else sd.default.device[0])["name"]
+        log(f"microphone: {name}; PTT key '{cfg.ptt_key}', pad button {cfg.ptt_game_button}")
     except Exception as e:
         log(f"no microphone: {e!r}")
 

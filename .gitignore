@@ -14,6 +14,14 @@ models/
 *.onnx
 *.bin
 logs/
+*.f1cap
+*.db
+*.npz
+*.log
+.ruff_cache/
+.coverage
+# local assistant settings
+.claude/
 # os/editor
 .DS_Store
 Thumbs.db
