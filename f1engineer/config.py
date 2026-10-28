@@ -34,7 +34,8 @@ class Config:
     tts_voice: str = field(default_factory=lambda: _env("F1E_TTS_VOICE", "en_GB-alan-medium"))
     tts_speed: float = field(default_factory=lambda: _env("F1E_TTS_SPEED", 1.4, float))  # 1.0 = Piper default pace
     wake: str = field(default_factory=lambda: _env("F1E_WAKE", "on"))            # on | off (enrol with `f1engineer wake` for accuracy)
-    wake_name: str = field(default_factory=lambda: _env("F1E_WAKE_NAME", "Bono"))  # the engineer's name = wake word
+    # the engineer's name: personality + wake word ("Hey Bono"); F1E_WAKE_NAME is the older spelling
+    wake_name: str = field(default_factory=lambda: _env("F1E_ENGINEER_NAME", _env("F1E_WAKE_NAME", "Bono")))
     radio_fx: str = field(default_factory=lambda: _env("F1E_RADIO_FX", "light"))           # light | full | off
     volume: float = field(default_factory=lambda: _env("F1E_VOLUME", 1.0, float))  # radio loudness 0..1
     gpu: str = field(default_factory=lambda: _env("F1E_GPU", "auto"))  # auto | off

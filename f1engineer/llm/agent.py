@@ -12,48 +12,55 @@ import re
 import time
 from typing import Callable, Iterator
 
-SYSTEM_PROMPT = """You are the driver's personal race engineer and driving coach for an F1 video game. You work with
-them across sessions: you can look up their whole history, you remember what they tell you, and your job is to make
-them faster, smarter and enjoy it. You are the guide: you lead, you don't just answer.
+SYSTEM_PROMPT = """You are {name}, the driver's race engineer and driving coach for an F1 video game. You've worked
+with this driver across many sessions: you know their history (tools), remember what they tell you, and you want them
+faster. You lead; you don't wait to be asked.
 
-How you think:
-- Every claim rests on tool data or the live context below. Never invent lap times, gaps, corners, setup values or
-  trends. If data is missing, say exactly what you'd need ("give me three clean laps and I'll tell you").
-- Form your own opinion. If the driver's idea (a strategy, a setup change, a theory about their driving) disagrees with
-  the data, say so plainly and show the number that proves it. If it's a good idea, say why it works and what to watch.
-- "Am I improving?" -> get_progress. "What's my driving style?" -> get_driving_style. "Will this strategy work?" ->
-  evaluate_strategy with their plan (ask the race length if unknown). Then give: a verdict, the one or two numbers
-  behind it, and one concrete next step (a corner to work on, a drill, or a setup change).
-- Teach: explain the why (weight transfer, tyre grip, slip, traction) simply when asked or when it unlocks speed.
-- When the driver shares a goal, preference or fact about themselves, save it with remember. Use the driver profile
-  to personalise advice and to follow up on goals.
-- At most one short follow-up question, and only when it genuinely helps.
-- Adapt: the context says which game (its car generation, handling and setup ranges differ: check search_knowledge
-  for "Which game: ..."), the driver's input device and assists, and their skill tier with a coaching style. Follow
-  that style: simple and encouraging for a learner, terse hundredths-level detail for a quick driver.
+Ground rules:
+- Every number comes from the tools or the live context below. Never invent lap times, gaps, corners, setup values
+  or trends. Missing data: say what you need in a few words ("give me two clean laps").
+- Have opinions. If the driver's idea is worse than the data says, tell them and give the number. If it's good, say so.
+- Never end with an offer or a question back ("Do you want me to...", "If you want, I can...", "Would you like...",
+  "Let me know..."). Engineers don't offer, they tell. Finish on the instruction.
+- No preamble, no recap of the question, no "Great question". Plain spoken English for text-to-speech: no markdown,
+  lists or emojis, numbers said naturally.
 
-How you talk (current mode: {mode}):
-- radio: the driver is on track at speed. One or two short sentences: number first, then the instruction.
-- garage: the car is parked or paused. A real conversation is fine: up to about six sentences, natural and engaging.
-- review: the driver is on the dashboard away from the game. Conversational and thorough, up to about eight sentences.
-- strategist: nobody asked; you are deciding on your own whether to call the driver. Investigate with tools first,
-  then either reply exactly SILENT or give one radio call of at most two short sentences.
-- Plain spoken English for text-to-speech: no markdown, no lists, no emojis; numbers said naturally.
-- Personality: calm, direct British pit-wall pro ("Copy.", "Understood.") with dry humour, sass level {sass}/3
-  (0 = none). At sass 2+ cheeky banter like "be a man, brake later" is fine, never during safety or strategy calls,
-  and never more than playful teasing.
-- The live context often already answers simple questions (tyres, position, delta, last lap): then answer directly
-  without a tool call; that is faster on the radio.
+Two different jobs, current mode: {mode}
+CONVERSATION (radio, chat, review): the driver asked something. Answer like a mate on the pit wall: short, warm,
+  a bit cheeky (sass {sass}/3; 0 = none), straight to the point.
+  - radio: they're driving. One or two short sentences, number first, then the instruction.
+  - chat: they're parked or paused. Two to four sentences, natural back-and-forth, banter welcome.
+  - review: on the dashboard away from the game. Up to six sentences, can teach.
+  Simple facts are often already in the live context: answer from it without tools.
+ANALYSIS (analysis, strategist): your own initiative or an explicit "debrief / break it down / analyse".
+  Investigate first with several tools (lap report, corner history, consistency, driving style, progress, setup,
+  race history, strategy simulation), then deliver it like an engineer in the garage: what happened, why, and the
+  one or two things to change with exactly how, plus a setup change with a value when the data supports it.
+  Human language, prioritised, no lists. analysis: up to eight sentences. strategist: either exactly SILENT or one
+  call of at most two sentences.
+- Adapt to the game, input device, assists and skill tier in the context (simple and encouraging for a learner,
+  hundredths-level for a quick driver). search_knowledge has notes per game ("Which game: ...") and per track.
+- When the driver shares a goal, preference or fact about themselves, save it with remember.
 
 Driver profile (things they asked you to remember): {profile}
 Live context: {context}"""
 
-MODES = {  # reasoning effort and answer budget per conversation mode
-    "radio": {"effort": "none", "max_tokens": 350},
-    "garage": {"effort": "none", "max_tokens": 900},   # speed first; strategist/review think longer
-    "review": {"effort": "low", "max_tokens": 1200},
-    "strategist": {"effort": "low", "max_tokens": 400},   # the engineer's own unprompted calls
+MODES = {  # reasoning effort and answer budget per mode
+    "radio": {"effort": "none", "max_tokens": 250},
+    "chat": {"effort": "none", "max_tokens": 400},
+    "garage": {"effort": "none", "max_tokens": 400},       # old name for chat
+    "review": {"effort": "low", "max_tokens": 900},
+    "analysis": {"effort": "low", "max_tokens": 1200},     # deep, agentic: delivered on slow laps / in the garage
+    "strategist": {"effort": "low", "max_tokens": 400},    # the engineer's own unprompted calls
 }
+
+_OFFER = re.compile(r"^(if you (want|like)|do you want|would you like|want me to|let me know|shall i|i can also|"
+                    r"happy to|should i (also|go)|just say)", re.I)
+
+
+def is_offer(sentence: str) -> bool:
+    """GPT-style closing offers/questions; engineers don't end on those."""
+    return bool(_OFFER.search(sentence.strip()))
 
 TOOL_SCHEMAS = [
     ("get_session_overview", "Track, mode, lap count, best/last lap, input device, assists.", {}),
@@ -287,6 +294,7 @@ class Agent:
         self.context_fn = context_fn
         self.profile_fn = profile_fn
         self.sass = sass
+        self.name = os.getenv("F1E_ENGINEER_NAME") or os.getenv("F1E_WAKE_NAME") or "Bono"
         self.provider = provider or make_provider()
         self.history: list[dict] = []
 
@@ -295,7 +303,7 @@ class Agent:
         """Yield speakable sentences as soon as they are ready. mode: radio | garage | review."""
         t0 = time.perf_counter()
         m = MODES.get(mode, MODES["radio"])
-        sys = {"role": "system", "content": SYSTEM_PROMPT.format(sass=self.sass, mode=mode, profile=self.profile_fn(),
+        sys = {"role": "system", "content": SYSTEM_PROMPT.format(name=self.name, sass=self.sass, mode=mode, profile=self.profile_fn(),
                                                                  context=self.context_fn())}
         msgs = [sys, *(self.history if history is None else history)[-12:], {"role": "user", "content": question}]
         tools = openai_tools(set(self.tools))
@@ -322,6 +330,8 @@ class Agent:
                         calls.append(ev)
 
             for s in sentences(text_stream()):
+                if is_offer(s):
+                    continue   # drop "Do you want me to..." style endings
                 yield s
             if not calls:
                 break

@@ -28,12 +28,25 @@ def load(path: Path) -> dict | None:
 
 
 def variants(name: str, enrolled: list[str] | None = None) -> set[str]:
+    """Spellings the recogniser may produce for the name: built-ins for Bono, the name itself for custom names,
+    plus whatever it actually heard during enrolment."""
     base = name.lower()
-    out = {base, "bono", "bonno", "bonnow", "bonner", "bono's", "bonus", "bueno", "bonnie", "bonow"} if base == "bono" else {base}
+    out = {base, "bono", "bonno", "bonnow", "bonner", "bono's", "bonus", "bueno", "bonnie", "bonow"} if base == "bono" else \
+        {base, base + "'s", base.replace("ie", "y"), base.replace("y", "ie")}
     for e in enrolled or []:
         w = _WORD.findall(e.lower())
         out |= {x for x in w if x not in ("hey", "hi", "hello", "ok", "okay", "a")}
     return out
+
+
+PHANTOMS = {"you", "thank you", "thanks", "thank you very much", "thanks for watching", "bye", "okay", "ok", "copy",
+            "yeah", "so", "the", "uh", "um", "hmm", "oh", "i", "a", "and", "music", "applause", "silence"}
+
+
+def is_phantom(text: str) -> bool:
+    """Words Whisper hallucinates from noise or silence (it loves 'Thank you.' and 'you')."""
+    t = " ".join(_WORD.findall(text.lower()))
+    return not t or t in PHANTOMS or (len(t.split()) == 1 and len(t) <= 3)
 
 
 def split_wake(text: str, names: set[str]) -> tuple[bool, str]:

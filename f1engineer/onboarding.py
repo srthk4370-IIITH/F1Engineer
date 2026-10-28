@@ -101,6 +101,9 @@ def main() -> None:
 
     # 3. preferences
     print("\n[3/6] Your engineer")
+    name = _ask("  Your engineer's name (it's also the hands-free wake word, e.g. 'Hey Bono')",
+                env.get("F1E_ENGINEER_NAME", env.get("F1E_WAKE_NAME", "Bono")))
+    env["F1E_ENGINEER_NAME"] = name.strip().split()[0].capitalize() if name.strip() else "Bono"
     env["F1E_SASS"] = _ask("  Sass level 0 (strictly professional) .. 3 (roasts you)", env.get("F1E_SASS", "2"))
     for k, (v, desc) in VOICES.items():
         print(f"    {k}. {desc} ({v})")
@@ -149,6 +152,7 @@ def main() -> None:
         print(f"  No audio device found: {e!r}")
     if _yes("  Play a test radio message and record 3 s from your mic?"):
         _audio_test(cfg)
+    cfg = Config()
     if _yes(f"  Set up hands-free radio? You say 'Hey {cfg.wake_name}' + your question, no button needed"):
         from f1engineer import wake
         wake.enrol(cfg, cfg.wake_name)

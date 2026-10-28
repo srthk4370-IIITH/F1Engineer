@@ -75,6 +75,11 @@ def short_t(s: float) -> str:
     return f"{int(m)}:{sec:04.1f}" if m else f"{sec:.1f}"
 
 
+def _name() -> str:
+    import os
+    return os.getenv("F1E_ENGINEER_NAME") or os.getenv("F1E_WAKE_NAME") or "Bono"
+
+
 WEATHER_SAY = {0: "dry", 1: "dry, bit of cloud", 2: "overcast but dry", 3: "light rain", 4: "heavy rain", 5: "storm"}
 
 
@@ -90,7 +95,7 @@ def radio_check(tr, compound: str, best: float | None) -> str:
     if tr.is_time_trial:
         target = (pick(f" Best here is {short_t(best)}, let's beat it.", f" Target's your {short_t(best)}.")
                   if best else pick(" No time here yet, build up to it.", " First run here, take a couple of laps to find it."))
-        return f"Radio check. {temps}, {wx}.{tyre}{target}"
+        return f"Radio check, {_name()} here. {temps}, {wx}.{tyre}{target}"
     if tr.is_race:
         laps = s.get("totalLaps")
         grid = tr.lapdata[tr.player_idx]["gridPosition"] if tr.lapdata is not None else 0
@@ -233,6 +238,7 @@ class RadioScheduler:
         self.say = say          # callable(text, priority)
         self.queue: list[Message] = []
         self.busy_until = 0.0
+        self.calm_until = 0.0
         self.spoken_keys: dict[str, float] = {}
 
     def push(self, msgs: list[Message]) -> None:
@@ -270,12 +276,15 @@ class RadioScheduler:
             if ctx.get("talking") and m.kind != "urgent":
                 continue  # the driver is being answered: routine calls wait
             if m.kind == "garage":
-                if not parked:
-                    continue  # full debriefs only when the car is parked
+                if not (parked or ctx.get("cooldown")):
+                    continue  # deep analysis waits for a quiet moment: garage, pause, slow lap, safety car
             elif not (m.kind == "urgent" and win > 1.5 or m.duration <= win * (1.5 if now - m.created > 20 else 1.0)):
                 continue  # after 20 s of waiting a message may run a little into the braking zone
+            if m.kind != "urgent" and now < self.calm_until:
+                continue
             self.queue.remove(m)
             self.busy_until = now + m.duration
+            self.calm_until = self.busy_until + (3.0 if m.kind != "urgent" else 0.0)
             self.spoken_keys[m.key] = now
             self.say(m.text, m.priority)
             return

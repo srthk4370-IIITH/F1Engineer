@@ -16,6 +16,11 @@ from concurrent.futures import ThreadPoolExecutor
 
 from f1engineer import quick
 
+import re
+
+DEEP = re.compile(r"debrief|break (it|that|this) down|in detail|analy[sz]e|full (analysis|picture)|deep dive|"
+                  r"go through|talk me through|explain properly")
+MAX_SENTENCES = {"radio": 3, "chat": 5, "garage": 5, "review": 8, "analysis": 12}
 ACK_AFTER_S = 1.2
 FIRST_SENTENCE_TIMEOUT_S = 25
 STALE_S = 60
@@ -51,6 +56,8 @@ class AskPipeline:
             if old and time.time() - old.asked < 5:
                 return old           # the same question twice (double press / echo): answer once
             self.seq += 1
+            if mode is None and DEEP.search(text.lower()):
+                mode = "analysis"      # "debrief me", "break it down": the deep, tool-heavy version on demand
             q = Question(self.seq, text, mode or self.eng.mode())
             self.recent = {k: v for k, v in self.recent.items() if time.time() - v.asked < 30}
             self.recent[key] = q
@@ -69,7 +76,10 @@ class AskPipeline:
                 q.source = "instant"
                 q.q.put(fast)
                 return
-            for s in self.eng.agent.ask(q.text, mode=q.mode, remember=False, history=history):
+            cap = MAX_SENTENCES.get(q.mode, 6)
+            for n, s in enumerate(self.eng.agent.ask(q.text, mode=q.mode, remember=False, history=history)):
+                if n >= cap:
+                    break   # at speed nobody listens to a speech: conversation stays short whatever the model writes
                 q.q.put(s)
         except Exception as e:
             print(f"[ask] failed: {e!r}")

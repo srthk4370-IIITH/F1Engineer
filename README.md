@@ -204,7 +204,7 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 | `F1E_TTS_VOICE` | `en_GB-alan-medium` | Piper voice |
 | `F1E_TTS_SPEED` | `1.4` | Speaking rate (1.0 = Piper default) |
 | `F1E_RADIO_FX` | `light` | Radio effect: `light` (crisp), `full` (narrow, crunchy pit radio), `off` |
-| `F1E_WAKE` / `F1E_WAKE_NAME` | `on` / `Bono` | Hands-free wake word and the engineer's name |
+| `F1E_WAKE` / `F1E_ENGINEER_NAME` | `on` / `Bono` | Hands-free wake word, and your engineer's name (pick any: it changes the wake word too) |
 | `F1E_PTT_KEY` / `F1E_PTT_BUTTON` | `shift` / `RS` | Push-to-talk key / controller button |
 | `F1E_MIC` | (Windows default) | Part of your microphone's name, e.g. `Kraken` |
 | `F1E_GPU` | `auto` | `auto` = use the GPU only while it has free memory; `off` = CPU |

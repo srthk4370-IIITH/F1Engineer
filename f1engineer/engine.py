@@ -314,9 +314,10 @@ class Engine:
             a = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=self.agent.provider,
                       profile_fn=self.profile.summary)
             text = " ".join(a.ask(
-                f"(Engineer's own garage debrief, not a driver question.) Debrief lap {lap_num} for when I'm back in the "
-                "garage: how it compared, whether I'm improving this session, the one or two things to fix next and how, "
-                "and a setup thought only if the data supports it. Under seven sentences.", mode="garage", remember=False))
+                f"(Your own analysis, delivered now in a quiet moment: slow lap, pit lane or garage.) Analyse lap "
+                f"{lap_num} and the session so far: dig through the lap report, corner history, consistency, driving "
+                "style and progress first. Then tell the driver what happened, why, the one or two things to change and "
+                "exactly how, and a setup change with a value if the data supports it.", mode="analysis", remember=False))
         except Exception as e:
             print(f"[engine] AI debrief failed: {e!r}")
         if text:
@@ -372,9 +373,9 @@ class Engine:
         """radio when the car is moving, garage when parked/paused (the engineer can talk longer and think deeper)."""
         tr = self.tr
         if tr.telemetry is None or time.time() - tr.last_packet_wall > 3 or tr.paused:
-            return "garage"
+            return "chat"
         c = self.ctx()
-        return "garage" if c.get("in_garage") or float(tr.telemetry[tr.player_idx]["speed"]) < 5 else "radio"
+        return "chat" if c.get("in_garage") or float(tr.telemetry[tr.player_idx]["speed"]) < 5 else "radio"
 
     def ask(self, question: str, mode: str | None = None, wait: float = 90) -> str:
         """Driver question (STT or dashboard chat): queued, answered in order, spoken as sentences arrive."""
@@ -423,6 +424,9 @@ class Engine:
             c["paused"] = True
             return c
         T, L = tr.telemetry[tr.player_idx], tr.lapdata[tr.player_idx]
+        from f1engineer.coaching import IN_LAP, OUT_LAP
+        c["cooldown"] = bool(self.coach.gone_called or self.coach.status in (OUT_LAP, IN_LAP)
+                             or P.SAFETY_CAR.get(tr.session.get("safetyCarStatus", 0), "none") != "none")
         c.update(throttle=float(T["throttle"]), brake=float(T["brake"]), steer=float(T["steer"]),
                  in_garage=int(L["driverStatus"]) == 0, pit=int(L["pitStatus"]) > 0,
                  safety_car=P.SAFETY_CAR.get(tr.session.get("safetyCarStatus", 0), "none"))
@@ -453,7 +457,7 @@ class Engine:
             return
         c = {"paused": True} if quiet else self.ctx()
         c["talking"] = self.pipeline.busy
-        parked = bool(c.get("paused") or c.get("in_garage"))
+        parked = bool(c.get("paused") or c.get("in_garage") or c.get("cooldown"))
         if parked and self._debrief_pending and not self.pipeline.busy:
             lap_num, self._debrief_pending = self._debrief_pending, None
             held = next((m for m in self.sched.queue if m.key == "garage_debrief"), None)

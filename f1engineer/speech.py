@@ -341,9 +341,9 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 text = stt.transcribe_safe(audio, cfg, log)
             ms = (time.perf_counter() - t0) * 1000
             log(f"PTT released: {len(audio) / 16000:.1f}s audio, level {level:.0f} dBFS, recognised in {ms:.0f} ms on {stt.device}: {text!r}")
-            if text:
+            if text and not W.is_phantom(text) and level > -60:
                 outq.put(("transcript", text, round(ms)))
-            else:
+            elif len(audio) > 16000 * 0.8:     # held the button properly but said nothing usable
                 outq.put(("transcript", "", round(ms)))
                 if level < -55:
                     log("microphone is (nearly) silent: wrong input device or muted?")
@@ -371,7 +371,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
 
     def wake_loop():
         names = W.variants(cfg.wake_name, (wk or {}).get("heard"))
-        gate = W.VoiceGate((wk or {}).get("threshold_db", -38.0))
+        gate = W.VoiceGate((wk or {}).get("threshold_db", -38.0), hang=1.1)   # a breath mid-sentence isn't the end
         await_until = 0.0
         log(f"wake word on: say 'Hey {cfg.wake_name}' (trigger level {gate.th:.0f} dBFS)")
         while True:
@@ -384,7 +384,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             except Exception as e:
                 log(f"wake transcription failed: {e!r}")
                 continue
-            if not text:
+            if not text or W.is_phantom(text):
                 continue
             if time.time() < await_until:          # the question after "Bono? - Go ahead."
                 await_until = 0.0
@@ -395,7 +395,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             if not call:
                 continue
             log(f"wake word heard: {text!r}")
-            if len(rest.split()) >= 2:
+            if len(rest.split()) >= 3:
                 beep(1200)
                 outq.put(("transcript", rest, 0))
             else:
