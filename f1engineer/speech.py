@@ -275,7 +275,9 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
         key = cfg.ptt_key.lower()
 
         def match(k):
-            return getattr(k, "char", None) and k.char.lower() == key or getattr(k, "name", None) == key
+            # "shift"/"ctrl"/"alt" match the left and right key alike
+            name = getattr(k, "name", None)
+            return getattr(k, "char", None) and k.char.lower() == key or name in (key, key + "_l", key + "_r")
 
         kl = keyboard.Listener(on_press=lambda k: match(k) and set_ptt("key", True),
                                on_release=lambda k: match(k) and set_ptt("key", False))

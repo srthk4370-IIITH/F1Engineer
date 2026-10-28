@@ -93,7 +93,8 @@ def main() -> None:
         err = _check_openai(key)
         print("  Key works." if not err else f"  Could not verify the key ({err}). Saved anyway; check it later.")
         env["OPENAI_API_KEY"] = key
-        env["OPENAI_MODEL"] = _ask("  Model", env.get("OPENAI_MODEL", "gpt-6-luna"))
+        model = _ask("  Model name (Enter for the default)", env.get("OPENAI_MODEL", "gpt-5.4-mini"))
+        env["OPENAI_MODEL"] = "gpt-5.4-mini" if model.lower() in ("y", "yes", "n", "no", "") else model
 
     # 3. preferences
     print("\n[3/6] Your engineer")
@@ -102,7 +103,7 @@ def main() -> None:
         print(f"    {k}. {desc} ({v})")
     choice = _ask("  Voice", "1")
     env["F1E_TTS_VOICE"] = VOICES.get(choice, VOICES["1"])[0]
-    env["F1E_PTT_KEY"] = _ask("  Push-to-talk keyboard key (hold while speaking)", env.get("F1E_PTT_KEY", "t"))
+    env["F1E_PTT_KEY"] = _ask("  Push-to-talk keyboard key (hold while speaking)", env.get("F1E_PTT_KEY", "shift"))
     env["F1E_PTT_BUTTON"] = _ask("  Push-to-talk controller button (A,B,X,Y,LB,RB,LS,RS,VIEW,DPAD_*) - pick one you\n"
                                  "  don't use for driving", env.get("F1E_PTT_BUTTON", "RS"))
     env["F1E_GPU"] = "auto" if _yes("  Use the GPU for speech recognition when it's free?", env.get("F1E_GPU", "auto") == "auto") else "off"

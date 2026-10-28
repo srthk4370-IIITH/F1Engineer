@@ -116,7 +116,7 @@ If context is lost, read this file first, then `PLAN.md`.
 - faster-whisper CUDA needs cuBLAS 12 + cuDNN 9 DLLs: pip `nvidia-cublas-cu12`, `nvidia-cudnn-cu12` + `os.add_dll_directory` (done in `speech._register_cuda_dlls`).
 - numpy `void.tolist()` leaves sub-array fields as ndarrays; convert them (done in `_rec_to_dict`).
 - `_Tee` (log redirect) needs `isatty()`, or uvicorn crashes silently in its thread.
-- 2026-10-28: default model changed gpt-4.1-mini -> `gpt-6-luna` (fast/cheap GPT-6 tier, $0.10/$0.50 per 1M; radio needs low time-to-first-sentence; tool use is simple lookups). Provider asks lowest `reasoning_effort` (none->minimal->low via `OPENAI_REASONING`), learns rejected params per process. `tools/pick_model.py [--write]` races candidates on the real capture. Smarter alternative: gpt-6.1-sol.
+- 2026-10-28 (later): user chose `gpt-5.4-mini` as default for now; PTT key -> Shift (either side). Earlier same day: default model changed gpt-4.1-mini -> `gpt-6-luna` (fast/cheap GPT-6 tier, $0.10/$0.50 per 1M; radio needs low time-to-first-sentence; tool use is simple lookups). Provider asks lowest `reasoning_effort` (none->minimal->low via `OPENAI_REASONING`), learns rejected params per process. `tools/pick_model.py [--write]` races candidates on the real capture. Smarter alternative: gpt-6.1-sol.
 
 ## 10. Status / what's built
 See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, flashbacks, restarts, ghosts), analysis (lapmath, coach, setup_advisor, strategy, trackmap, ghost), radio (templates + sass + scheduler), llm (agent, Mock/OpenAI providers, knowledge), speech (Piper, Whisper GPU/CPU, PTT key/XInput/UDP, VRAM watchdog), storage (SQLite + npz, retention), web (FastAPI + WS + uPlot dashboard), guard (priority, memory/disk watchdogs, lock, rotating logs), watcher (game detection, autostart), gameconfig (safe UDP enable/restore), onboarding (setup wizard, doctor), sim/forge (synthetic 20-car race), tools (record, replay, bench_latency), tests (9).
@@ -143,6 +143,6 @@ See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, 
 
 ## 12. Tomorrow (with the user)
 1. Put the OpenAI key in `.env` (or `uv run f1engineer setup`), then `uv run python tools/bench_latency.py` for real LLM latency; tune the model (`OPENAI_MODEL`) and prompt.
-2. Drive a real session with `uv run f1engineer run`: check radio timing on straights, PTT (hold T / right-stick click), voice choice and volume.
+2. Drive a real session with `uv run f1engineer run`: check radio timing on straights, PTT (hold Shift / right-stick click), voice choice and volume.
 3. Decide on `uv run f1engineer autostart on`.
 4. Ideas not done: native parsers for F1 22–25 formats; per-track corner names beyond Silverstone (auto "Turn N" otherwise); tyre-temperature-based setup advice; in-game overlay.

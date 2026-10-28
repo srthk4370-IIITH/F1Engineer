@@ -64,7 +64,7 @@ def sentences(chunks: Iterator[str]) -> Iterator[str]:
         yield buf.strip()
 
 
-DEFAULT_MODEL = "gpt-6-luna"
+DEFAULT_MODEL = "gpt-5.4-mini"
 # Radio needs speed over deep thought: ask for the lowest reasoning effort the model accepts.
 EFFORT_LADDER = ["none", "minimal", "low"]
 

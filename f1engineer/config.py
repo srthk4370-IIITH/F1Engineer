@@ -28,7 +28,7 @@ class Config:
     udp_port: int = field(default_factory=lambda: _env("F1E_UDP_PORT", 20777, int))
     web_port: int = field(default_factory=lambda: _env("F1E_WEB_PORT", 8020, int))
     sass: int = field(default_factory=lambda: _env("F1E_SASS", 2, int))
-    ptt_key: str = field(default_factory=lambda: _env("F1E_PTT_KEY", "t"))
+    ptt_key: str = field(default_factory=lambda: _env("F1E_PTT_KEY", "shift"))
     ptt_game_button: str = field(default_factory=lambda: _env("F1E_PTT_BUTTON", "RS"))  # see packets_2020.BUTTONS
     stt_model: str = field(default_factory=lambda: _env("F1E_STT_MODEL", "auto"))
     tts_voice: str = field(default_factory=lambda: _env("F1E_TTS_VOICE", "en_GB-alan-medium"))
