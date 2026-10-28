@@ -107,6 +107,13 @@ class InstanceLock:
         self.path.write_text(str(os.getpid()))
         return True
 
+    def held_by_other(self) -> bool:
+        try:
+            pid = int(self.path.read_text().strip())
+            return pid != os.getpid() and psutil.pid_exists(pid) and "python" in psutil.Process(pid).name().lower()
+        except Exception:
+            return False
+
     def release(self) -> None:
         try:
             if self.path.read_text().strip() == str(os.getpid()):

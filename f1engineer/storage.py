@@ -108,10 +108,14 @@ class Storage:
 
     def lap_detail(self, lap_id: int) -> dict | None:
         with self.lock:
-            r = self.db.execute("SELECT report, trace, lap_time, car_name, lap_num FROM laps WHERE id=?", (lap_id,)).fetchone()
+            r = self.db.execute(
+                "SELECT l.report, l.trace, l.lap_time, l.car_name, l.lap_num, s.track, l.session_uid, l.valid, l.input_device,"
+                " l.assists FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid WHERE l.id=?", (lap_id,)).fetchone()
         if not r:
             return None
-        return {"report": json.loads(r[0]) if r[0] else None, "trace": r[1], "lap_time": r[2], "car": r[3], "lap": r[4]}
+        return {"report": json.loads(r[0]) if r[0] else None, "trace": r[1], "lap_time": r[2], "car": r[3], "lap": r[4],
+                "track": r[5], "session": r[6], "valid": bool(r[7]), "input": r[8],
+                "assists": json.loads(r[9]) if r[9] else {}}
 
     def load_trace(self, rel: str) -> dict[str, np.ndarray]:
         with np.load(self.root / rel) as z:

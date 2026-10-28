@@ -14,9 +14,26 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.concurrency import run_in_threadpool
 
+from f1engineer.analysis import coach
 from f1engineer.analysis import lapmath as LM
 
 STATIC = Path(__file__).parent / "static"
+TRACE_KEYS = ("dist", "t", "speed", "throttle", "brake", "gear", "rpm", "steer", "drs", "x", "z", "glat", "glon")
+
+
+class ReviewOnly:
+    """Stand-in engine for `f1engineer dashboard`: stored laps only, no telemetry, no radio."""
+
+    def __init__(self, store):
+        self.store = store
+        self.ref = None
+        self.listeners: list = []
+
+    def live_state(self) -> dict:
+        return {"connected": False, "offline": True}
+
+    def ask(self, q: str) -> str:
+        return "I'm off the pit wall. Start the game and I'll talk."
 
 
 def create_app(engine) -> FastAPI:
@@ -68,19 +85,29 @@ def create_app(engine) -> FastAPI:
         return engine.store.radio_log()
 
     @app.get("/api/lap/{lap_id}")
-    def lap(lap_id: int):
+    async def lap(lap_id: int):
         d = engine.store.lap_detail(lap_id)
         if not d:
             raise HTTPException(404)
+        return await run_in_threadpool(_lap_payload, d)
+
+    def _lap_payload(d: dict) -> dict:
         arrays = engine.store.load_trace(d["trace"])
         L = float(arrays["dist"].max())
         L = engine.ref["track_length"] if engine.ref else (5 * round(L / 5))
         rs = LM.resample(arrays, L)
         if rs is None:
             rs = {k: v for k, v in arrays.items()}
-        step = max(1, int(round(5 / LM.GRID_M)))  # ~5 m resolution is plenty for plots
-        keep = ("dist", "t", "speed", "throttle", "brake", "gear", "steer", "x", "z")
-        d["trace"] = {k: np.round(rs[k][::step], 3).tolist() for k in keep if k in rs}
+            d["corners"] = []
+        else:
+            d["corners"] = [{"num": c.num, "name": c.name, "apex": round(c.apex), "start": round(c.start), "end": round(c.end)}
+                            for c in LM.detect_corners(rs, coach.corner_names(d.get("track") or ""))]
+        if "slip_fl" in rs:  # worst front / rear wheel slip: lock-ups (negative) and wheelspin (positive)
+            rs["slip_f"] = np.where(np.abs(rs["slip_fl"]) > np.abs(rs["slip_fr"]), rs["slip_fl"], rs["slip_fr"])
+            rs["slip_r"] = np.where(np.abs(rs["slip_rl"]) > np.abs(rs["slip_rr"]), rs["slip_rl"], rs["slip_rr"])
+        step = max(1, int(round(4 / LM.GRID_M)))  # ~4 m resolution is plenty for plots
+        d["trace"] = {k: np.round(rs[k][::step], 3).tolist() for k in (*TRACE_KEYS, "slip_f", "slip_r") if k in rs}
+        d["track_length"] = L
         return d
 
     @app.post("/api/ask")

@@ -50,6 +50,7 @@ The engineer only uses the GPU while it has free memory, and moves to the CPU if
 ## In the game
 - F1 2020: Game Options > Settings > Telemetry Settings > UDP Telemetry **On**, IP 127.0.0.1, port 20777, 60 Hz, format 2020.
   (`f1engineer udp enable` does this for you.)
+- Review laps any time (no game needed): `uv run f1engineer dashboard` -> F1-style telemetry (speed, throttle, brake, gear, RPM, steering, G, slip), lap A vs B comparison with delta trace, mini-sectors, corner table and track map. Import a recording with `uv run f1engineer import`.
 - Push-to-talk: hold **Shift** (keyboard, either side) or the configured controller button (default: right-stick click), speak, release.
 - Ask things like *"Where am I losing time?"*, *"What happened at the Loop?"*, *"What setup should I change?"*,
   *"How are my tyres?"*, *"Should I pit?"*, *"Explain trail braking."*

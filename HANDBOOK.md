@@ -146,3 +146,9 @@ See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, 
 2. Drive a real session with `uv run f1engineer run`: check radio timing on straights, PTT (hold Shift / right-stick click), voice choice and volume.
 3. Decide on `uv run f1engineer autostart on`.
 4. Ideas not done: native parsers for F1 22–25 formats; per-track corner names beyond Silverstone (auto "Turn N" otherwise); tyre-temperature-based setup advice; in-game overlay.
+
+### 2026-10-28 — review dashboard
+- `f1engineer dashboard`: offline review server (ReviewOnly stand-in engine, same port 8020). Polls engine.lock; when the live engineer starts it exits and the engine (which waits for the port) takes over; open pages reconnect by themselves.
+- `f1engineer import [caps]`: replays a capture through Engine (MockProvider) into the DB.
+- New UI (static/index.html, style.css, app.js): Telemetry tab with session lap list (purple = session fastest, PB ghosts), A/B compare, stats, mini-sectors (split halfway between apexes), synced uPlot charts (delta, speed+corner labels, throttle, brake, gear stepped, RPM, steer, lat G, front slip) with synced zoom, track map coloured by speed or by who is faster + scrub cursor, corner table (apex speed, brake point, gear, throttle-on), engineer notes from the stored report.
+- /api/lap now returns track, valid, input, assists, detected corners, track_length, rpm/drs/glat/glon/slip_f/slip_r.
