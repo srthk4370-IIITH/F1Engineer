@@ -23,6 +23,9 @@ Rules:
 - Radio replies: max 2 short sentences unless the driver asks to explain or for a debrief.
 - Speak naturally for text-to-speech: no markdown, no lists, no emojis; say "point three" style numbers briefly.
 - If data is missing, say so in a few words.
+- The context below is a live snapshot (tyres, position, delta, nearby cars, last lap losses). If it already answers
+  the question, answer straight away without calling a tool; use tools for detail.
+- Sound like a real race engineer: calm, direct ("Copy.", "Understood.", "Box, box."), number first, then the instruction.
 Current context: {context}"""
 
 TOOL_SCHEMAS = [
@@ -38,6 +41,10 @@ TOOL_SCHEMAS = [
     ("get_consistency", "Which corners vary most lap to lap (fix these first).", {}),
     ("search_knowledge", "Driving technique / setup / track knowledge base.",
      {"query": {"type": "string"}}),
+    ("get_car_status", "Live car: tyre surface/inner temps, pressures and wear per corner, compound and age, brake and "
+     "engine temps, fuel margin, ERS, damage.", {}),
+    ("get_rivals", "Who I'm racing: cars around my position with gaps, last/best laps, tyre compound and age, pit status.",
+     {"around": {"type": "integer", "description": "positions either side (default 3)"}}),
 ]
 
 
@@ -123,6 +130,8 @@ class MockProvider:
     """Offline stand-in: picks tools by keyword, then summarises tool output with templates."""
 
     ROUTES = [
+        (("temp", "pressure", "damage", "wear"), "get_car_status"),
+        (("racing", "who", "ahead", "behind", "rival", "position", "p1", "place"), "get_rivals"),
         (("tyre", "tire", "gap", "fuel", "ers", "strategy", "box", "pit", "position", "rain", "weather"), "get_race_status"),
         (("setup", "wing", "diff", "brake bias", "understeer", "oversteer", "balance"), "get_setup_and_advice"),
         (("consistent", "consistency"), "get_consistency"),
@@ -169,6 +178,22 @@ class MockProvider:
             if d["calls"]:
                 return d["calls"][0].capitalize() + "."
             return f"P{d.get('position', '?')}, nothing urgent."
+        if "tyres" in d and isinstance(d["tyres"], dict) and "surface_temp_c" in d["tyres"]:
+            t = d["tyres"]
+            temps = ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in t["surface_temp_c"].items())
+            return f"{t['compound']} tyres, {t['age_laps']} laps old. Surface temps {temps}."
+        if "cars" in d and "my_position" in d:
+            near = [c for c in d["cars"] if not c["me"]]
+            ahead = [c for c in near if c["position"] < d["my_position"]]
+            behind = [c for c in near if c["position"] > d["my_position"]]
+            out = f"You're P{d['my_position']}."
+            if ahead:
+                c = ahead[-1]
+                out += f" Ahead is {c['name']}" + (f", {abs(c['gap_to_me_s']):.1f} up the road" if c["gap_to_me_s"] is not None else "") + "."
+            if behind:
+                c = behind[0]
+                out += f" Behind is {c['name']}" + (f", {c['gap_to_me_s']:.1f} back" if c["gap_to_me_s"] is not None else "") + "."
+            return out
         if "corners" in d and isinstance(d["corners"], list) and d["corners"] and "spread" in d["corners"][0]:
             return f"Least consistent is {d['corners'][0]['corner']}. Nail that first."
         return "Copy."
@@ -194,7 +219,16 @@ class Agent:
 
             def text_stream():
                 nonlocal answer
-                for ev in self.provider.stream(msgs, openai_tools()):
+                try:  # the request fails on the first event (bad model name, no credit, network down)
+                    events = iter(self.provider.stream(msgs, openai_tools()))
+                    first = next(events, None)
+                except Exception as e:
+                    print(f"[llm] {type(self.provider).__name__} failed: {str(e)[:300]}")
+                    if isinstance(self.provider, MockProvider):
+                        raise
+                    events = iter(MockProvider().stream(msgs, openai_tools()))  # this answer comes from the offline brain
+                    first = next(events, None)
+                for ev in _chain(first, events):
                     if ev["type"] == "text":
                         answer += ev["text"]
                         yield ev["text"]
@@ -217,6 +251,12 @@ class Agent:
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(res, default=str)[:6000]})
         self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
         self.last_latency = time.perf_counter() - t0
+
+
+def _chain(first, rest):
+    if first is not None:
+        yield first
+    yield from rest
 
 
 def make_provider():

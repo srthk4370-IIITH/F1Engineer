@@ -124,6 +124,31 @@ def build_report(lap, lap_rs: dict, ref_rs: dict, ref_label: str, ref_time: floa
     return rep
 
 
+def self_review(lap_rs: dict, corners: list[LM.Corner]) -> list[dict]:
+    """Mistakes visible without any reference lap, worst first: lock-ups, off-track, wheelspin, coasting, late power."""
+    metrics = LM.corner_metrics(lap_rs, lap_rs, np.zeros(len(lap_rs["dist"])), corners)
+    out = []
+    for m in metrics:
+        name = m.corner.name
+        if m.lockup:
+            out.append({"corner": name, "severity": 3, "issue": f"locked up into {name}",
+                        "tip": "smoother brake release as you turn in"})
+        if m.off_track:
+            out.append({"corner": name, "severity": 3, "issue": f"ran wide at {name}",
+                        "tip": "a metre tighter on exit, keep it inside the lines"})
+        if m.wheelspin:
+            out.append({"corner": name, "severity": 2, "issue": f"wheelspin out of {name}",
+                        "tip": "be gentler on the throttle on exit"})
+        if m.coast_m >= 30:
+            out.append({"corner": name, "severity": 2, "issue": f"coasted {m.coast_m:.0f} metres into {name}",
+                        "tip": "no coasting, it's brake or throttle"})
+        if m.throttle_on is not None and m.throttle_on > 120:
+            out.append({"corner": name, "severity": 1, "issue": f"full throttle {m.throttle_on:.0f} metres after the apex of {name}",
+                        "tip": "get back to full throttle sooner"})
+    out.sort(key=lambda x: -x["severity"])
+    return out
+
+
 def balance_summary(metrics: list[LM.CornerMetrics], lap_rs: dict) -> dict:
     """Relative mid-corner balance by corner speed class.
 

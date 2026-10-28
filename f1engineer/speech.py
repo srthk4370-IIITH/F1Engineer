@@ -149,6 +149,17 @@ class STT:
         gc.collect()
         self.device, self.name = "cpu", c.stt_model
 
+    def transcribe_safe(self, audio16k: np.ndarray, cfg, log) -> str:
+        """transcribe(), but a GPU failure (e.g. the game grabbed the VRAM) falls back to the CPU and retries."""
+        try:
+            return self.transcribe(audio16k)
+        except Exception as e:
+            if self.device != "cuda":
+                raise
+            log(f"GPU speech recognition failed ({e!r}): switching to CPU")
+            self.to_cpu(cfg)
+            return self.transcribe(audio16k)
+
     def transcribe(self, audio16k: np.ndarray) -> str:
         segs, _ = self.model.transcribe(audio16k, language="en", beam_size=1, initial_prompt=STT_PROMPT,
                                         vad_filter=False, condition_on_previous_text=False, without_timestamps=True)
@@ -213,6 +224,14 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     rec = {"on": False, "chunks": []}
     lock = threading.Lock()
 
+    def beep(freq: float):
+        """Short radio chirp so the driver knows the button registered (rising = open, falling = closed)."""
+        try:
+            t = np.arange(int(tts.sr * 0.07)) / tts.sr
+            sd.play((0.18 * min(1.0, cfg.volume) * np.sin(2 * np.pi * freq * t) * np.hanning(len(t))).astype(np.float32), tts.sr)
+        except Exception:
+            pass
+
     def player():
         while True:
             prio, _, text = say_q.get()
@@ -220,11 +239,15 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 return
             if rec["on"]:
                 continue  # driver is talking: drop engineer chatter
-            audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
-            playing.set()
-            sd.play(audio, tts.sr)
-            sd.wait()
-            playing.clear()
+            try:
+                audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
+                playing.set()
+                sd.play(audio, tts.sr)
+                sd.wait()
+            except Exception as e:
+                log(f"playback failed: {e!r}")
+            finally:
+                playing.clear()
 
     def set_ptt(src: str, down: bool):
         with lock:
@@ -241,22 +264,34 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                     break
             rec["chunks"] = []
             rec["on"] = True
+            beep(1200)
+            log(f"PTT down ({src})")
         elif was and not now:
-            rec["on"] = False
             threading.Thread(target=finish, daemon=True).start()
 
     def finish():
-        time.sleep(0.15)  # tail of the last word
-        if not rec["chunks"]:
-            return
-        audio = np.concatenate(rec["chunks"])[:, 0]
-        if len(audio) < 16000 * 0.3:
-            return
-        t0 = time.perf_counter()
-        text = stt.transcribe(audio)
-        ms = (time.perf_counter() - t0) * 1000
-        if text:
-            outq.put(("transcript", text, round(ms)))
+        time.sleep(0.25)  # tail of the last word
+        rec["on"] = False
+        beep(800)
+        try:
+            if not rec["chunks"]:
+                log("PTT released: no microphone audio captured (check the Windows default input device)")
+                return
+            audio = np.concatenate(rec["chunks"])[:, 0]
+            level = 20 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-9)
+            if len(audio) < 16000 * 0.3:
+                log(f"PTT released after {len(audio) / 16000:.2f}s: too short, hold the key while you speak")
+                return
+            t0 = time.perf_counter()
+            text = stt.transcribe_safe(audio, cfg, log)
+            ms = (time.perf_counter() - t0) * 1000
+            log(f"PTT released: {len(audio) / 16000:.1f}s audio, level {level:.0f} dBFS, recognised in {ms:.0f} ms on {stt.device}: {text!r}")
+            if text:
+                outq.put(("transcript", text, round(ms)))
+            elif level < -55:
+                log("microphone is (nearly) silent: wrong input device or muted?")
+        except Exception as e:
+            log(f"speech recognition failed: {e!r}")
 
     def mic_cb(indata, frames, t, status):
         if rec["on"]:
@@ -267,6 +302,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     try:
         mic = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=mic_cb, blocksize=1600)
         mic.start()
+        log(f"microphone: {sd.query_devices(kind='input')['name']}; PTT key '{cfg.ptt_key}', pad button {cfg.ptt_game_button}")
     except Exception as e:
         log(f"no microphone: {e!r}")
 

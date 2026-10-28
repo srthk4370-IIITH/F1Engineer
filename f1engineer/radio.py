@@ -80,7 +80,7 @@ def tt_lap_messages(rep, sass_level: int, is_best: bool) -> list[Message]:
             head += sass("slow_lap", sass_level)
     if not rep.valid:
         head += " Invalid though, track limits." if rep.delta < 0 else " And it's invalid."
-    msgs.append(Message(1, now, head, "straight", 60, "lap_head"))
+    msgs.append(Message(0, now, head, "straight", 60, "lap_head"))
     for i, c in enumerate(rep.losses[:2]):
         cause = c["causes"][0] if c["causes"] else "slower through there"
         t = f"{c['corner']}: {cause}. That cost {fmt_d(c['time_loss'])}."
@@ -89,6 +89,54 @@ def tt_lap_messages(rep, sass_level: int, is_best: bool) -> list[Message]:
     if rep.gains:
         g = rep.gains[0]
         msgs.append(Message(5, now, f"Good job in {g['corner']}, gained {fmt_d(g['time_loss'])}.", "straight", 90, "gain"))
+    return msgs
+
+
+TIPS = [  # cause fragment -> what to do next lap
+    ("locked", "smoother brake release as you turn in"),
+    ("ran wide", "keep it inside the white lines, a metre tighter on exit"),
+    ("earlier", "brake later, trust the car"),
+    ("overshot", "brake a touch earlier and hit the apex"),
+    ("apex speed", "carry more speed to the apex, less steering"),
+    ("too much into the apex", "slow in, fast out, sacrifice the entry"),
+    ("full throttle", "get back to full throttle sooner"),
+    ("coasted", "no coasting, it's brake or throttle"),
+    ("wheelspin", "be gentler on the throttle on exit"),
+    ("exit speed", "straighten the wheel earlier for a better exit"),
+]
+
+
+def next_lap_messages(rep, advice: list[dict], said: set[str]) -> list[Message]:
+    """What to work on next lap (biggest loss, turned into an instruction) + an occasional setup idea."""
+    now = CLOCK()
+    msgs = []
+    for c in rep.losses[:1]:
+        if c["time_loss"] < 0.08:
+            break
+        tip = next((t for frag, t in TIPS for cause in c["causes"] if frag in cause), None)
+        if tip:
+            msgs.append(Message(4, now, f"Next lap, focus on {c['corner']}: {tip}.", "straight", 120, "focus"))
+    for a in advice[:1]:
+        if a["change"] not in said:
+            said.add(a["change"])
+            msgs.append(Message(6, now, f"Setup idea for the garage: {a['change']}.", "straight", 240, "setup_tip"))
+    return msgs
+
+
+def self_review_messages(lap_time: float, valid: bool, issues: list[dict], sass_level: int) -> list[Message]:
+    """Debrief for a lap with no reference to compare against (first lap of a new track)."""
+    now = CLOCK()
+    head = f"Lap {fmt_t(lap_time)}{'' if valid else ', invalid'}."
+    if not issues:
+        head += " Clean lap, no mistakes I can see. That's our reference, now go faster."
+        return [Message(0, now, head, "straight", 60, "lap_head")]
+    msgs = [Message(0, now, head + " No reference yet, but here's what I saw.", "straight", 60, "lap_head")]
+    for n, i in enumerate(issues[:2]):   # one short call per issue: they fit on a straight
+        kind = "lockup" if "locked" in i["issue"] else "offtrack" if "wide" in i["issue"] else "loss"
+        msgs.append(Message(2 + n, now, i["issue"][0].upper() + i["issue"][1:] + "." + sass(kind, sass_level),
+                            "straight", 90, f"loss{n}"))
+    top = issues[0]
+    msgs.append(Message(4, now, f"Next lap, focus on {top['corner']}: {top['tip']}.", "straight", 120, "focus"))
     return msgs
 
 
@@ -173,8 +221,8 @@ class RadioScheduler:
             if m.kind == "garage":
                 if not parked:
                     continue  # full debriefs only when the car is parked
-            elif not (m.kind == "urgent" and win > 1.5 or m.duration <= win):
-                continue
+            elif not (m.kind == "urgent" and win > 1.5 or m.duration <= win * (1.5 if now - m.created > 20 else 1.0)):
+                continue  # after 20 s of waiting a message may run a little into the braking zone
             self.queue.remove(m)
             self.busy_until = now + m.duration
             self.spoken_keys[m.key] = now

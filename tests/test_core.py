@@ -124,8 +124,15 @@ def test_real_capture_end_to_end():
     cfg.data_dir = Path(tempfile.mkdtemp())
     e = Engine(cfg, storage=Storage(cfg))
     e.speech.say = lambda *a: None
-    for _, d in read_capture(REAL):
-        e.feed(d)
+    from f1engineer import radio
+    clock = [0.0]
+    old, radio.CLOCK = radio.CLOCK, lambda: clock[0]   # run on capture time, as in a live session
+    try:
+        for t, d in read_capture(REAL):
+            clock[0] = t
+            e.feed(d)
+    finally:
+        radio.CLOCK = old
     e.drain()
     assert e.tr.track == "Silverstone" or e.reports
     assert [round(r.lap_time, 3) for r in e.reports] == [89.098, 94.598]

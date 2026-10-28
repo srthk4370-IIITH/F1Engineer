@@ -10,6 +10,7 @@ import traceback
 import numpy as np
 
 from f1engineer import radio
+from f1engineer.coaching import LiveCoach
 from f1engineer.analysis import coach, lapmath as LM, setup_advisor, strategy
 from f1engineer.config import Config
 from f1engineer.llm import knowledge
@@ -58,12 +59,16 @@ class Engine:
         self._last_buttons = 0
         self._ptt_mask = next((k for k, v in P.BUTTONS.items() if v == self.cfg.ptt_game_button), 0)
         self.listeners: list = []  # callables(event: dict) for the dashboard websocket
+        self.coach = LiveCoach(self)
+        self._tips_said: set[str] = set()
+        self._unanalysed = None  # first lap of a TT session, waiting for a ghost reference
         tr = self.tr
         tr.on("session_start", self._on_session)
         tr.on("lap_complete", self._on_lap)
         tr.on("lap_aborted", lambda lap, why: self._emit({"type": "lap_aborted", "lap": lap.lap_num, "reason": why}))
         tr.on("sc_change", self._on_sc)
         tr.on("flashback", lambda t: self.sched.clear())
+        tr.on("sector", lambda car, sector: self.coach.on_sector(sector))
 
     # ---- ingest ------------------------------------------------------------------
     def feed(self, data: bytes, wall: float | None = None) -> None:
@@ -143,6 +148,8 @@ class Engine:
         self.gaps = strategy.GapTimer()
         self.tyres = strategy.TyreModel()
         self.sched.clear()
+        self.coach = LiveCoach(self)
+        self._unanalysed = None
         self.agent.history.clear()
         self._bg_put(self.store.start_session, tr.session_uid, tr.track, tr.session_type, tr.packet_format)
         # stored personal best becomes the initial reference
@@ -174,6 +181,10 @@ class Engine:
             # ghosts / AI: candidate references in TT, stored for the dashboard
             if lap.complete and tr.is_time_trial and (self.ref is None or lap.lap_time < self.ref["time"]):
                 self._set_reference(lap.arrays, lap.lap_time, tr.car_name(lap.car_idx).lower() + " ghost")
+                first, self._unanalysed = self._unanalysed, None
+                # the driver's first lap had no reference: compare it with the ghost, if that's still news
+                if first is not None and radio.CLOCK() - self._unanalysed_at < 30:
+                    self._analyse(first)
             if lap.complete and (tr.is_time_trial or lap.car_idx < 22):
                 self._bg_put(self.store.save_lap, tr.session_uid, lap, tr.car_name(lap.car_idx), None, "")
             return
@@ -183,20 +194,16 @@ class Engine:
         if lap.complete:
             if self.ref is None:
                 self._set_reference(lap.arrays, lap.lap_time, "your best lap")
-                if not tr.is_race:
-                    self._say(f"Lap {radio.fmt_t(lap.lap_time)}. That's the banker, now we have a reference.", 3)
+                if self.ref and not tr.is_race:
+                    self._unanalysed = lap if tr.is_time_trial else None
+                    self._unanalysed_at = radio.CLOCK()
+                    if self.coach.was_out_lap(lap.lap_num):
+                        self._say(f"Out lap done, {radio.fmt_t(lap.lap_time)}. Tyres are in, now we push.", 3)
+                    else:
+                        issues = coach.self_review(self.ref["rs"], self.corners)
+                        self.sched.push(radio.self_review_messages(lap.lap_time, not lap.invalid, issues, self.cfg.sass))
             else:
-                rs = LM.resample(lap.arrays, self.ref["track_length"])
-                if rs is not None:
-                    rep = coach.build_report(lap, rs, self.ref["rs"], self.ref["label"], self.ref["time"], self.corners)
-                    self.reports.append(rep)
-                    del self.reports[:-20]
-                    self.advice = setup_advisor.advise(self.reports[-5:], tr.setup, self.input_device, lap.assists)
-                    is_best = lap.lap_time < self.ref["time"] and (not lap.invalid or "best" in self.ref["label"])
-                    if tr.is_time_trial or not tr.is_race:
-                        self.sched.push(radio.tt_lap_messages(rep, self.cfg.sass, is_best))
-                        self.sched.push([radio.Message(6, radio.CLOCK(), radio.lap_debrief_text(rep, self.advice),
-                                                       "garage", 900, "garage_debrief")])
+                rep = self._analyse(lap)
             # new personal best (valid laps only, or any lap if we have nothing valid yet)
             best_stored = self.store.reference(tr.track)
             if not lap.invalid and (best_stored is None or lap.lap_time < best_stored[1]):
@@ -213,6 +220,26 @@ class Engine:
                      rep.to_dict() if rep else None, self.input_device)
         self._emit({"type": "lap", "lap": lap.lap_num, "time": lap.lap_time, "valid": not lap.invalid,
                     "report": rep.to_dict() if rep else None})
+
+    def _analyse(self, lap):
+        """Corner-by-corner report against the current reference + radio debrief. Returns the report (or None)."""
+        tr = self.tr
+        rs = LM.resample(lap.arrays, self.ref["track_length"])
+        if rs is None:
+            return None
+        rep = coach.build_report(lap, rs, self.ref["rs"], self.ref["label"], self.ref["time"], self.corners)
+        self.reports.append(rep)
+        del self.reports[:-20]
+        self.advice = setup_advisor.advise(self.reports[-5:], tr.setup, self.input_device, lap.assists)
+        is_best = lap.lap_time < self.ref["time"] and (not lap.invalid or "best" in self.ref["label"])
+        if self.coach.was_out_lap(lap.lap_num):
+            self._say(f"Out lap done, {radio.fmt_t(lap.lap_time)}. Tyres are in, now we push.", 3)
+        elif tr.is_time_trial or not tr.is_race:
+            self.sched.push(radio.tt_lap_messages(rep, self.cfg.sass, is_best))
+            self.sched.push(radio.next_lap_messages(rep, self.advice, self._tips_said))
+            self.sched.push([radio.Message(6, radio.CLOCK(), radio.lap_debrief_text(rep, self.advice),
+                                           "garage", 900, "garage_debrief")])
+        return rep
 
     def _on_sc(self, status: str) -> None:
         if status in ("full", "virtual"):
@@ -279,6 +306,7 @@ class Engine:
                 self.sched.tick({"paused": True} if quiet else self.ctx())
                 if quiet:
                     continue
+                self.coach.tick()
                 if self.tr.is_race and n % 20 == 0:
                     self.race = strategy.race_snapshot(self.tr, self.gaps, self.tyres)
                     msgs = radio.race_messages(self.race, self.cfg.sass, self.last_calls)
@@ -318,11 +346,88 @@ class Engine:
 
     # ---- LLM tools ------------------------------------------------------------------
     def _context(self) -> str:
+        """Compact live snapshot sent with every question: simple questions need no tool round trip."""
         tr = self.tr
         best = min((r.lap_time for r in self.reports), default=None)
-        return (f"track={tr.track}; mode={tr.session_type}; laps_analysed={len(self.reports)}; best_analysed={best}; "
-                f"reference={self.ref['label'] + ' ' + str(round(self.ref['time'], 3)) if self.ref else 'none'}; "
-                f"input={self.input_device}; assists={self.reports[-1].assists if self.reports else {}}")
+        s = (f"track={tr.track}; mode={tr.session_type}; laps_analysed={len(self.reports)}; best_analysed={best}; "
+             f"reference={self.ref['label'] + ' ' + str(round(self.ref['time'], 3)) if self.ref else 'none'}; "
+             f"input={self.input_device}; assists={self.reports[-1].assists if self.reports else {}}")
+        try:
+            car = self._car_status()
+            if "tyres" in car:
+                t = car["tyres"]
+                s += (f"; tyres {t['compound']} {t['age_laps']} laps old, surface temps C {t['surface_temp_c']}, "
+                      f"inner {t['inner_temp_c']}, wear % {t['wear_pct']}; fuel margin laps {car.get('fuel_margin_laps')}; "
+                      f"ERS {car.get('ers_pct')}%")
+            if tr.lapdata is not None:
+                L = tr.lapdata[tr.player_idx]
+                s += (f"; lap {int(L['currentLapNum'])}, P{int(L['carPosition'])}, last {round(float(L['lastLapTime']), 3)}, "
+                      f"best {round(float(L['bestLapTime']), 3)}, current lap invalid={bool(L['currentLapInvalid'])}")
+                d = self.coach.delta_now()
+                if d is not None:
+                    s += f", live delta {d:+.2f}s"
+            if tr.is_race:
+                near = self._rivals(2).get("cars", [])
+                s += "; nearby: " + ", ".join(f"P{c['position']} {c['name']} gap {c.get('gap_to_me_s')}s {c.get('tyre')}"
+                                              for c in near if not c.get("me"))
+            if self.reports:
+                r = self.reports[-1]
+                s += f"; last analysed lap {r.lap_num}: top losses " + ", ".join(
+                    f"{c['corner']} +{c['time_loss']:.2f} ({', '.join(c['causes'][:2])})" for c in r.losses[:3])
+        except Exception as e:
+            s += f"; (live snapshot error {e!r})"
+        return s
+
+    def _car_status(self) -> dict:
+        tr = self.tr
+        me = tr.player_idx
+        out: dict = {}
+        names = ["rear_left", "rear_right", "front_left", "front_right"]  # F1 2020 wheel order
+        st = tr.status[me] if tr.status and tr.status[me] else {}
+        if tr.telemetry is not None:
+            T = tr.telemetry[me]
+            out["tyres"] = {
+                "compound": P.VISUAL_COMPOUND.get(st.get("visualTyreCompound"), "?") if st else "?",
+                "age_laps": st.get("tyresAgeLaps") if st else None,
+                "surface_temp_c": dict(zip(names, (int(x) for x in T["tyresSurfaceTemperature"]))),
+                "inner_temp_c": dict(zip(names, (int(x) for x in T["tyresInnerTemperature"]))),
+                "pressure_psi": dict(zip(names, (round(float(x), 1) for x in T["tyresPressure"]))),
+                "wear_pct": dict(zip(names, st.get("tyresWear", []))) if st else None,
+                "typical_window_c": "surface ~85-105, inner ~90-105 (dry slicks)",
+            }
+            out["brake_temp_c"] = dict(zip(names, (int(x) for x in T["brakesTemperature"])))
+            out["engine_temp_c"] = int(T["engineTemperature"])
+        if st:
+            out["fuel_margin_laps"] = round(float(st.get("fuelRemainingLaps", 0)), 2)
+            out["ers_pct"] = round(float(st.get("ersStoreEnergy", 0)) / 4e6 * 100)
+            dmg = {k: st.get(k) for k in ("frontLeftWingDamage", "frontRightWingDamage", "rearWingDamage",
+                                          "engineDamage", "gearBoxDamage") if st.get(k)}
+            out["damage_pct"] = dmg or "none"
+        return out or {"error": "no car data yet"}
+
+    def _rivals(self, around: int = 3) -> dict:
+        tr = self.tr
+        if tr.lapdata is None:
+            return {"error": "no timing data yet"}
+        me = tr.player_idx
+        my_pos = int(tr.lapdata[me]["carPosition"])
+        cars = []
+        for i in range(22):
+            L = tr.lapdata[i]
+            pos = int(L["carPosition"])
+            if pos == 0 or int(L["resultStatus"]) < 2 or abs(pos - my_pos) > around:
+                continue
+            st = tr.status[i] if tr.status and tr.status[i] else {}
+            g = 0.0 if i == me else (self.gaps.gap(me, i) if pos < my_pos else self.gaps.gap(i, me))
+            cars.append({"position": pos, "name": tr.car_name(i), "me": i == me,
+                         "gap_to_me_s": None if g is None else round(g if pos > my_pos else -g, 2),
+                         "last_lap": round(float(L["lastLapTime"]), 3), "best_lap": round(float(L["bestLapTime"]), 3),
+                         "tyre": P.VISUAL_COMPOUND.get(st.get("visualTyreCompound"), "?") if st else "?",
+                         "tyre_age_laps": st.get("tyresAgeLaps") if st else None,
+                         "in_pit": int(L["pitStatus"]) > 0, "penalties_s": int(L["penalties"])})
+        cars.sort(key=lambda c: c["position"])
+        return {"my_position": my_pos, "total_cars": tr.num_active, "cars": cars,
+                "note": "gap_to_me_s: negative = that car is ahead of me by that many seconds"}
 
     def _tools(self) -> dict:
         def overview():
@@ -366,6 +471,8 @@ class Engine:
             "get_race_status": lambda: self.race or strategy.race_snapshot(self.tr, self.gaps, self.tyres),
             "get_consistency": lambda: {"corners": coach.consistency(self.reports[-6:])},
             "search_knowledge": lambda query="": {"results": knowledge.search(query)},
+            "get_car_status": self._car_status,
+            "get_rivals": lambda around=3: self._rivals(int(around)),
         }
 
     # ---- dashboard state -----------------------------------------------------------
