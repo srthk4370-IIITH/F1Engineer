@@ -84,6 +84,7 @@ class AskPipeline:
             q.acked = True
             self.eng.speech.say(quick.ack_for(text), 1, "ack", f"ack{q.seq}")
         history = list(self.eng.agent.history)   # each answer sees the conversation as it was when asked
+        q.ai_text = quick.explain_request(self.eng, text) or text    # "explain that" -> about the last radio call
         self.pool.submit(self._generate, q, history)
         self.pending.put(q)
         return q
@@ -96,7 +97,7 @@ class AskPipeline:
                 q.q.put(fast)
                 return
             cap = MAX_SENTENCES.get(q.mode, 6)
-            for n, s in enumerate(self.eng.agent.ask(q.text, mode=q.mode, remember=False, history=history)):
+            for n, s in enumerate(self.eng.agent.ask(getattr(q, "ai_text", q.text), mode=q.mode, remember=False, history=history)):
                 if n >= cap:
                     break   # at speed nobody listens to a speech: conversation stays short whatever the model writes
                 q.q.put(s)

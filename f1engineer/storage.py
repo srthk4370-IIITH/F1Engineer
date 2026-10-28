@@ -48,7 +48,8 @@ class Storage:
         self.db = sqlite3.connect(self.root / "f1engineer.db", check_same_thread=False)
         self.db.executescript(SCHEMA)
         cols = [r[1] for r in self.db.execute("PRAGMA table_info(laps)")]
-        for col, typ in (("sectors", "TEXT"), ("compound", "TEXT"), ("tyre_age", "INTEGER")):   # added after release 1
+        for col, typ in (("sectors", "TEXT"), ("compound", "TEXT"), ("tyre_age", "INTEGER"),
+                         ("setup", "TEXT")):   # added after release 1
             if col not in cols:
                 self.db.execute(f"ALTER TABLE laps ADD COLUMN {col} {typ}")
         self.session_clock: float | None = None  # importer: date sessions by the recording, not by now
@@ -136,12 +137,13 @@ class Storage:
         with self.lock:
             cur = self.db.execute(
                 "INSERT INTO laps(session_uid,car_idx,car_name,lap_num,lap_time,valid,input_device,assists,report,trace,created,"
-                "sectors,compound,tyre_age) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "sectors,compound,tyre_age,setup) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (str(uid), lap.car_idx, car_name, lap.lap_num, lap.lap_time, int(not lap.invalid), input_device,
                  json.dumps(lap.assists), json.dumps(report, default=str) if report else None,
                  str(trace.relative_to(self.root)), self.session_clock or time.time(),
                  json.dumps([int(x) for x in lap.sector_ms]) if any(lap.sector_ms) else None,
-                 getattr(lap, "compound", "") or None, getattr(lap, "tyre_age", None)))
+                 getattr(lap, "compound", "") or None, getattr(lap, "tyre_age", None),
+                 json.dumps(lap.setup) if getattr(lap, "setup", None) else None))
             self.db.commit()
             return cur.lastrowid
 

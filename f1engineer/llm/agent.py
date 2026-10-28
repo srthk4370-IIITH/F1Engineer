@@ -104,6 +104,29 @@ TOOL_SCHEMAS = [
       "preference": {"type": "string", "description": "the preference in the driver's own terms"}}),
     ("forget", "Remove a preference (by topic) or notes containing some text, when the driver asks.",
      {"what": {"type": "string"}}),
+    ("get_setup_history", "Every setup used on this track, what changed between them and what it did to lap time and "
+     "each corner. Use it to judge whether a change worked.", {}),
+    ("head_to_head", "The driver's best lap now vs their best from another session on this track: gap, sectors, "
+     "corners improved and worse (with how the driving changed), style then vs now.", {}),
+    ("start_practice_plan", "Start a structured practice plan the engine tracks lap by lap. Build it from the data: "
+     "2-5 steps aimed at the biggest, most fixable losses, realistic targets (e.g. apex speed a few km/h above the "
+     "current best, not the reference's). Pick the metric that matches the CAUSE of the loss: braking early -> "
+     "brake_point, slow apex -> apex_speed, late power -> throttle_on, coasting -> coasting, lock-ups -> no_lockup, "
+     "wide exits -> no_off; then lap-level goals (sector, lap_time, clean_lap, consistency).",
+     {"goal": {"type": "string"}, "steps": {"type": "array", "items": {"type": "object", "properties": {
+         "metric": {"type": "string", "enum": ["corner_loss", "entry_loss", "exit_loss", "apex_speed", "exit_speed",
+                                               "brake_point", "throttle_on", "coasting", "apex_gear", "no_lockup",
+                                               "no_wheelspin", "no_off", "lap_time", "delta_ref", "sector", "clean_lap",
+                                               "valid_lap", "mistakes_max", "coasting_lap", "consistency"]},
+         "sector": {"type": "integer", "description": "1-3, for the sector metric"},
+         "corner": {"type": "string", "description": "corner name for corner metrics"},
+         "target": {"type": "number", "description": "ABSOLUTE values: seconds for corner_loss/lap_time/consistency, "
+                    "km/h for apex_speed (e.g. 115, near their current best from the lap report), metres before the "
+                    "apex for brake_point, metres after the apex for throttle_on"},
+         "laps": {"type": "integer", "description": "attempts allowed (default 3)"},
+         "hits": {"type": "integer", "description": "laps needed (consistency: laps in a row)"},
+         "why": {"type": "string"}}, "required": ["metric"]}}}),
+    ("get_plan_status", "Progress of the practice plan in progress.", {}),
     ("get_race_history", "This race lap by lap: position, gaps ahead/behind, tyre compound, wear and temps, fuel, ERS, "
      "safety car, weather. Use it to see trends (tyre deg, gap closing, position changes).", {}),
     ("get_stored_lap", "A stored lap's corner report from the database (works away from the game).",

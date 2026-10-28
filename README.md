@@ -169,6 +169,26 @@ the setup: ..."). After "Go ahead" you have 2.5 s to start talking (otherwise "D
 for 1.4 s of quiet before deciding you've finished. With Shift there's no guessing: release = done.
 Voice commands: "say again", "stop", "quiet" (urgent calls only for five minutes), "radio on".
 
+**Practice plans.** "Give me a practice plan" - he builds 2-5 targets aimed at the *causes* of your biggest losses and
+measures every lap against them. Targets per corner: time lost (total, entry or exit), apex and exit speed, braking
+point, full-throttle point, coasting, gear at the apex, no lock-up / wheelspin / running wide; per lap: lap time, gap
+to your reference, a sector time, a clean or valid lap, max mistakes, total coasting, consistency over several laps.
+After each lap he closes the loop: a miss comes with the reason and the fix ("Village: 110, target 115. You braked
+12 m earlier: brake at a later marker."), progress is noted ("Closer: 110 to 111"), two clear misses bring a halfway
+target ("Let's get 113 first"), and a hit raises the bar once before moving on. Say "plan status", "skip step" or
+"stop the plan". The Live tab shows the plan.
+
+**Explain that.** After any call, say "explain that" and he expands it: what it means, why, and exactly how.
+
+**Head-to-head.** Set a new session best and he compares it with your best from another session on the same track:
+"That's three tenths quicker than Tuesday, most of it at Stowe" or "Still four tenths off Tuesday: Luffield, braked
+26 m later and overshot". Ask "how do I compare to last time?" for the full breakdown (sectors, corners, style), or use
+"+ best from another session" on the dashboard.
+
+**Setup.** He reads the car's current setup with each slider's range and what it does, suggests concrete moves
+("front anti-roll bar 7 -> 6"), never past a slider limit, uses tyre temperatures, and remembers which setup every lap
+was driven on - so he can tell you whether the last change actually worked.
+
 **Memory.** Tell him how you like to drive or be coached ("coasting is fine for me on keyboard", "don't nag me about
 kerbs") and he keeps it as a preference per topic; saying something new on the same topic replaces it (the old one is
 kept as history). Preferences are soft: he follows them, but if a specific corner clearly costs time he'll say so

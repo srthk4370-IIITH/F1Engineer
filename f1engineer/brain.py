@@ -415,3 +415,104 @@ def backfill(store) -> int:
         finally:
             store.session_clock = None
     return n
+
+
+# ---- setups over time -------------------------------------------------------------------------------------
+def _player_laps(store, track: str) -> list[dict]:
+    with store.lock:
+        rows = store.db.execute(
+            "SELECT l.id, l.session_uid, s.started, l.lap_num, l.lap_time, l.valid, l.setup, l.trace, l.report, l.sectors "
+            "FROM laps l JOIN sessions s ON s.uid=l.session_uid WHERE l.car_name='Player' AND lower(s.track)=lower(?) "
+            "AND l.lap_time > 0 ORDER BY s.started, l.lap_num", (track,)).fetchall()
+    keys = ("id", "session", "started", "lap", "lap_time", "valid", "setup", "trace", "report", "sectors")
+    out = [dict(zip(keys, r)) for r in rows]
+    for d in out:
+        d["setup"] = json.loads(d["setup"]) if d["setup"] else None
+        d["report"] = json.loads(d["report"]) if d["report"] else None
+        d["sectors"] = json.loads(d["sectors"]) if d["sectors"] else None
+    return out
+
+
+def setup_history(store, track: str, fmt: int | None = 2020) -> dict:
+    """Each setup used on this track, what changed from the previous one, and what it did to the times."""
+    from f1engineer.analysis import setup_model as SM
+    laps = [lp for lp in _player_laps(store, track) if lp["setup"]]
+    if not laps:
+        return {"error": f"no laps with a recorded setup at {track} yet"}
+    groups: list[dict] = []
+    for lp in laps:
+        key = json.dumps({k: lp["setup"].get(k) for k in SM.PARAMS}, sort_keys=True)
+        if not groups or groups[-1]["key"] != key:
+            groups.append({"key": key, "setup": lp["setup"], "laps": []})
+        groups[-1]["laps"].append(lp)
+    out = []
+    for i, g in enumerate(groups):
+        times = [lp["lap_time"] for lp in g["laps"]]
+        corner: dict[str, list] = {}
+        for lp in g["laps"]:
+            for c in (lp["report"] or {}).get("corners", []):
+                corner.setdefault(c["corner"], []).append(c["time_loss"])
+        changes = []
+        if i:
+            prev = groups[i - 1]["setup"]
+            for p, (label, _, _) in SM.PARAMS.items():
+                a, b = prev.get(p), g["setup"].get(p)
+                if a is not None and b is not None and abs(a - b) > 1e-6:
+                    changes.append(f"{label} {a:g} -> {b:g}")
+        out.append({"setup_no": i + 1, "laps": len(times), **_pace(times),
+                    "changes_from_previous": changes or None,
+                    "corner_avg_loss_s": {k: round(float(np.mean(v)), 3) for k, v in corner.items()}})
+    for i in range(1, len(out)):
+        a, b = out[i - 1], out[i]
+        b["effect_vs_previous"] = {
+            "best_s": round(b["best"] - a["best"], 3),
+            "representative_s": round(b["representative_median"] - a["representative_median"], 3),
+            "corners_s": {k: round(b["corner_avg_loss_s"][k] - a["corner_avg_loss_s"][k], 3)
+                          for k in b["corner_avg_loss_s"] if k in a["corner_avg_loss_s"]}}
+    return {"track": track, "setups": out, "current": SM.annotate(laps[-1]["setup"], fmt),
+            "note": "negative effect = faster; few laps per setup = weak evidence, say so"}
+
+
+# ---- head-to-head with an earlier session on the same track ------------------------------------------------
+def head_to_head(store, track: str, current_session: str | None = None) -> dict:
+    """Your best lap now vs your best from another session here: corners, sectors, style - improved and worse."""
+    from f1engineer.analysis import coach
+    laps = _player_laps(store, track)
+    if not laps:
+        return {"error": f"no laps at {track}"}
+    cur = current_session or laps[-1]["session"]
+    best = lambda ls: min(ls, key=lambda x: (not x["valid"], x["lap_time"])) if ls else None  # noqa: E731
+    now, then = best([lp for lp in laps if lp["session"] == cur]), best([lp for lp in laps if lp["session"] != cur])
+    if not now or not then:
+        return {"error": "need laps from two different sessions on this track"}
+    a_now, a_then = store.load_trace(now["trace"]), store.load_trace(then["trace"])
+    L = 5 * round(float(a_then["dist"].max()) / 5)
+    rs_now, rs_then = LM.resample(a_now, L), LM.resample(a_then, L)
+    if rs_now is None or rs_then is None:
+        return {"error": "one of the laps is incomplete"}
+    corners = LM.detect_corners(rs_then, coach.corner_names(track))
+    metrics = LM.corner_metrics(rs_now, rs_then, LM.delta_trace(rs_now, rs_then), corners)
+    rows = []
+    for m in metrics:
+        rows.append({"corner": m.corner.name, "time_s": round(m.time_loss, 3),
+                     "apex_kmh": round(m.min_speed - m.ref_min_speed),
+                     "brake_point_m_earlier": None if m.brake_point is None or m.ref_brake_point is None
+                     else round(m.brake_point - m.ref_brake_point),
+                     "full_throttle_m_later": None if m.throttle_on is None or m.ref_throttle_on is None
+                     else round(m.throttle_on - m.ref_throttle_on),
+                     "now_vs_then": coach._causes(m)})
+    date = lambda lp: time.strftime("%a %d %b", time.localtime(lp["started"])) if lp["started"] else "earlier"  # noqa: E731
+    secs = None
+    if now["sectors"] and then["sectors"]:
+        secs = [round((x - y) / 1000, 3) for x, y in zip(now["sectors"], then["sectors"])]
+    st_now, st_then = style_metrics(rs_now), style_metrics(rs_then)
+    return {
+        "now": {"date": date(now), "lap": now["lap"], "time": now["lap_time"], "valid": bool(now["valid"])},
+        "then": {"date": date(then), "lap": then["lap"], "time": then["lap_time"], "valid": bool(then["valid"])},
+        "gap_s": round(now["lap_time"] - then["lap_time"], 3), "sector_gaps_s": secs,
+        "improved": sorted([r for r in rows if r["time_s"] < -0.03], key=lambda r: r["time_s"])[:4],
+        "worse": sorted([r for r in rows if r["time_s"] > 0.03], key=lambda r: -r["time_s"])[:4],
+        "style_then_vs_now": {k: [st_then[k], st_now[k]] for k in ("coasting_m", "full_throttle_pct", "braking_pct",
+                                                                    "trail_braking_pct", "brake_ramp_m_avg") if k in st_now},
+        "note": "time_s < 0 = faster now; 'now_vs_then' lists how the driving changed in that corner",
+    }

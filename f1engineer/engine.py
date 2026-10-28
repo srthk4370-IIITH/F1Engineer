@@ -16,7 +16,7 @@ from f1engineer.coaching import LiveCoach
 from f1engineer.race import RaceEngineer
 from f1engineer.insight import Patterns
 from f1engineer.pipeline import AskPipeline
-from f1engineer.analysis import coach, lapmath as LM, setup_advisor, strategy
+from f1engineer.analysis import coach, lapmath as LM, setup_advisor, setup_model, strategy
 from f1engineer.config import Config
 from f1engineer.llm import knowledge
 from f1engineer.llm.agent import Agent, MockProvider
@@ -56,6 +56,7 @@ class Engine:
         self.sched = radio.RadioScheduler(self._say_sched)
         self.sched.filter = self._radio_filter
         self.quiet_until = 0.0
+        self.plan = None              # practice plan in progress (plan.PracticePlan)
         self.agent = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=provider,
                            profile_fn=self.profile.summary)
         self.reports: list[coach.LapReport] = []
@@ -278,6 +279,7 @@ class Engine:
             except Exception:
                 traceback.print_exc()
         self.stats["last_lap_analysis_ms"] = round((time.perf_counter() - t0) * 1000, 1)
+        lap.setup = dict(tr.setup) if tr.setup else None   # each lap remembers the setup it was driven on
         self._bg_put(self.store.save_lap, tr.session_uid, lap, tr.car_name(lap.car_idx),
                      rep.to_dict() if rep else None, self.input_device)
         self._emit({"type": "lap", "lap": lap.lap_num, "time": lap.lap_time, "valid": not lap.invalid,
@@ -292,13 +294,20 @@ class Engine:
         rep = coach.build_report(lap, rs, self.ref["rs"], self.ref["label"], self.ref["time"], self.corners)
         self.reports.append(rep)
         del self.reports[:-20]
-        self.advice = setup_advisor.advise(self.reports[-5:], tr.setup, self.input_device, lap.assists)
+        self.advice = setup_advisor.advise(self.reports[-5:], tr.setup, self.input_device, lap.assists,
+                                           tr.packet_format, self._live_tyres())
         self.adapt = adapt.profile(self)
         is_best = lap.lap_time < self.ref["time"] and (not lap.invalid or "best" in self.ref["label"])
         if not self.coach.was_out_lap(lap.lap_num):   # patterns across laps: recurring corners, pace vs tyres/fuel
             st = tr.status[tr.player_idx] if tr.status and tr.status[tr.player_idx] else {}
             wear = float(np.mean(st.get("tyresWear") or [0])) if st else None
             self.sched.push(self.patterns.on_report(rep, wear))
+        if self.plan and not self.plan.finished and not self.coach.was_out_lap(lap.lap_num):
+            note = self.plan.on_report(rep)
+            if note:
+                self.sched.push([radio.Message(1, radio.CLOCK(), note, "straight", 90, "plan")])
+        if is_best and not lap.invalid and not tr.is_race:
+            self._bg_put(self._h2h_call)
         if self.coach.was_out_lap(lap.lap_num):
             self._say(f"Out lap done, {radio.fmt_t(lap.lap_time)}. Tyres are in, now we push.", 3)
         elif tr.is_time_trial or not tr.is_race:
@@ -332,6 +341,35 @@ class Engine:
             self.sched.push([radio.Message(6, radio.CLOCK(), text, "garage", 900, "garage_debrief")])
         elif fallback is not None:
             self.sched.push([fallback])
+
+    def _live_tyres(self) -> dict:
+        tr = self.tr
+        if tr.telemetry is None:
+            return {}
+        return {"tyre_surface": [int(x) for x in tr.telemetry[tr.player_idx]["tyresSurfaceTemperature"]]}
+
+    def _h2h_call(self) -> None:
+        """New session best: how it stacks up against your best from another session here."""
+        h = brain.head_to_head(self.store, self.tr.track, str(self.tr.session_uid))
+        if "error" in h:
+            return
+        g, then = h["gap_s"], h["then"]
+        if g < 0:
+            gain = h["improved"][0]["corner"] if h["improved"] else None
+            text = f"That's {radio.fmt_d(g)} quicker than your best from {then['date']}." + (f" Most of it at {gain}." if gain else "")
+        else:
+            worse = h["worse"][0] if h["worse"] else None
+            text = (f"Still {radio.fmt_d(g)} off your best from {then['date']}."
+                    + (f" It's {worse['corner']}: {worse['now_vs_then'][0]}." if worse and worse["now_vs_then"] else ""))
+        self.sched.push([radio.Message(4, radio.CLOCK(), text, "straight", 120, "h2h", evidence=abs(g))])
+
+    def start_plan(self, goal: str, steps: list[dict]) -> dict:
+        from f1engineer.plan import PracticePlan, sanitise
+        steps, fixes = sanitise(steps or [], self.reports[-5:])
+        self.plan = PracticePlan(goal, steps)
+        return {"started": not self.plan.finished, "intro": self.plan.intro(), "plan": self.plan.to_dict(),
+                "corrected_targets": fixes or None,
+                "note": "tell the driver the intro in your own words; progress is called automatically after each lap"}
 
     def _summarise(self, lap, rep) -> None:
         """Long-term memory row for this lap: style numbers + per-corner losses (for progress/style questions)."""
@@ -705,15 +743,24 @@ class Engine:
             "compare_laps": compare,
             "get_corner_history": corner_hist,
             "get_setup_and_advice": lambda: {
-                "game": self.game, "track": self.tr.track, "current_setup": self.tr.setup,
-                "rule_based_advice": self.advice or setup_advisor.advise(
-                    self.reports[-5:], self.tr.setup, self.input_device, self.reports[-1].assists if self.reports else {}),
+                "game": self.game, "track": self.tr.track,
+                "current_setup": setup_model.annotate(self.tr.setup, self.tr.packet_format),
+                "live_tyre_surface_temps_RL_RR_FL_FR": self._live_tyres().get("tyre_surface"),
+                "rule_based_advice": setup_advisor.advise(
+                    self.reports[-5:], self.tr.setup, self.input_device, self.reports[-1].assists if self.reports else {},
+                    self.tr.packet_format, self._live_tyres()),
+                "setup_history": brain.setup_history(self.store, self.tr.track, self.tr.packet_format).get("setups"),
                 "balance_last_lap": self.reports[-1].balance if self.reports else None,
                 "first_lap_review": None if self.reports else self._first_review,
-                "how_to_reason": "combine the balance (understeer/oversteer by corner speed), the corners where time is "
-                                 "lost and their causes, the driver's input device and style, and the track's character "
-                                 "(search_knowledge for the track and 'Which game') into 1-3 concrete changes with values "
-                                 "and the reason for each"},
+                "how_to_reason": "read every value against its range and higher_means; never suggest past a limit. "
+                                 "Separate driving problems (lines, braking, track limits) from car problems (balance "
+                                 "by corner speed, tyre temps, traction). Use setup_history to see what earlier changes "
+                                 "did. Give 1-3 changes as current -> new value with the reason and what to feel for; "
+                                 "if the evidence is thin (few laps), say so and suggest one change at a time"},
+            "get_setup_history": lambda: brain.setup_history(self.store, self.tr.track, self.tr.packet_format),
+            "head_to_head": lambda: brain.head_to_head(self.store, self.tr.track, str(self.tr.session_uid)),
+            "start_practice_plan": lambda goal, steps: self.start_plan(goal, steps),
+            "get_plan_status": lambda: self.plan.to_dict() if self.plan else {"error": "no plan running"},
             "get_race_status": lambda: self.race or strategy.race_snapshot(self.tr, self.gaps, self.tyres),
             "get_consistency": lambda: {"corners": coach.consistency(self.reports[-6:])},
             "search_knowledge": lambda query="": {"results": knowledge.search(query)},
@@ -758,4 +805,5 @@ class Engine:
         if self.reports:
             s["last_report"] = self.reports[-1].to_dict()
         s["advice"] = self.advice
+        s["plan"] = self.plan.to_dict() if self.plan else None
         return s

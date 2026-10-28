@@ -25,10 +25,14 @@ def _w(rx: str):
 
 COMMANDS = [  # radio commands: always instant, never the AI
     ("repeat", _w(r"^(say (that )?again|repeat( that)?|come again|what did you say)\b")),
+    ("plan_status", _w(r"\b(plan status|where am i in the plan|how'?s the plan|what'?s next in the plan)\b")),
+    ("plan_skip", _w(r"\b(skip (this |that )?step|next step)\b")),
+    ("plan_stop", _w(r"\b(stop|cancel|end) the plan\b|\b(stop|cancel|end) plan\b")),
     ("stop", _w(r"^(stop|stop talking|shut up|enough|hold on|wait)\b")),
     ("quiet", _w(r"\b(quiet|less talking|talk less|silence|leave me alone|stop the chatter)\b")),
     ("radio_on", _w(r"\b(radio on|talk to me|you can talk|back on)\b")),
 ]
+EXPLAIN = _w(r"^(explain( that| this| it)?|what do you mean|why( is that| that)?|how do i do that|meaning)\??$")
 
 INTENTS = [  # (name, pattern) - first match wins
     ("radio_check", _w(r"radio check|how do you read|do you (read|copy|hear) me|can you hear")),
@@ -86,6 +90,15 @@ def classify(question: str) -> str | None:
     return next((name for name, rx in INTENTS if rx.search(q)), None)
 
 
+def explain_request(eng, question: str) -> str | None:
+    """'Explain that' -> a full question about the last radio call (goes to the AI)."""
+    last = eng.last_message()
+    if last and EXPLAIN.search(question.lower().strip(" .!")):
+        return (f'Explain your last radio call properly: "{last}". What it means, why it matters, and exactly how to do '
+                "it on track (where, when, how much). Use the data if it helps.")
+    return None
+
+
 def instant(question: str) -> bool:
     """Will this be answered without the AI? (no side effects)"""
     return classify(question) is not None
@@ -106,6 +119,13 @@ def answer(eng, question: str) -> str | None:
     if intent == "radio_on":
         eng.quiet_until = 0.0
         return "Radio's back on."
+    if intent == "plan_status":
+        return eng.plan.status() if eng.plan else "No plan running. Ask me for a practice plan."
+    if intent == "plan_skip":
+        return eng.plan.skip() if eng.plan else "No plan running."
+    if intent == "plan_stop":
+        eng.plan = None
+        return "Plan stopped."
     try:
         return _answer(eng, intent)
     except Exception:

@@ -273,9 +273,16 @@ def test_real_session_reencoded_as_f1_24_gives_same_laps():
         e = Engine(cfg, storage=Storage(cfg))
         e.speech.say = lambda *a: None
         enc = Encoder(fmt) if fmt != 2020 else None
-        for _, d in read_capture(REAL):
-            for b in (enc.encode(d) if enc else [d]):
-                e.feed(b)
+        from f1engineer import radio
+        clock = [0.0]
+        old, radio.CLOCK = radio.CLOCK, lambda: clock[0]   # capture time: results must not depend on machine speed
+        try:
+            for t, d in read_capture(REAL):
+                clock[0] = t
+                for b in (enc.encode(d) if enc else [d]):
+                    e.feed(b)
+        finally:
+            radio.CLOCK = old
         e.drain()
         return e
     a, b = run(2020), run(2024)
@@ -427,3 +434,42 @@ def test_quick_commands_are_instant():
     assert quick.classify("go quiet for a bit") == "quiet" and quick.classify("radio on") == "radio_on"
     assert quick.instant("tyre temps?") and not quick.instant("why am I slow in turn 4?")
     assert quick.lead_in("what setup changes should I make").lower().count("setup") == 1
+
+
+def test_practice_plan_tracks_targets_lap_by_lap():
+    from types import SimpleNamespace as NS
+    from f1engineer.plan import PracticePlan
+    p = PracticePlan("fix Village and get a clean lap", [
+        {"metric": "apex_speed", "corner": "Village", "target": 115, "laps": 6},
+        {"metric": "clean_lap", "laps": 2}])
+    assert "Village" in p.intro()
+    rep = lambda v, valid=True, mistakes=(), causes=("braked 12 m earlier",): NS(  # noqa: E731
+        lap_time=90.0, valid=valid, mistakes=list(mistakes), delta=0.3, sectors=None,
+        corners=[{"corner": "Village", "min_speed": v, "time_loss": 0.1, "causes": list(causes), "lockup": False,
+                  "wheelspin": False, "off_track": False}])
+    msg = p.on_report(rep(110))
+    assert "110" in msg and "target 115" in msg and "braked 12 m earlier" in msg and "later marker" in msg   # why + fix
+    msg = p.on_report(rep(111))
+    assert "Closer: 110 to 111" in msg and "Let's get 113 first" in msg          # stuck -> halfway target
+    msg = p.on_report(rep(113))
+    assert "Bar's up" in msg and "115" in msg                                    # done -> stretch once
+    msg = p.on_report(rep(116))
+    assert "Nailed it" in msg and "clean lap" in msg and p.idx == 1
+    p.on_report(rep(116, valid=False))
+    msg = p.on_report(rep(116))
+    assert p.finished and "Plan complete: 2 of 2" in msg
+
+
+def test_setup_changes_respect_slider_limits():
+    from types import SimpleNamespace as NS
+    from f1engineer.analysis import setup_advisor, setup_model
+    setup = {"brakeBias": 50, "brakePressure": 100, "frontAntiRollBar": 1, "frontSuspension": 5, "onThrottle": 58}
+    rep = NS(corners=[{"corner": "Village", "lockup": True, "wheelspin": False, "off_track": False, "time_loss": 0.2,
+                       "causes": []}], balance={"slow": {"tendency": "more understeer"}})
+    adv = setup_advisor.advise([rep], setup, "keyboard", {"abs": 1}, 2020)
+    changes = [a["change"] for a in adv]
+    assert not any(c.startswith("brake bias") for c in changes)        # already at the 50% minimum: not suggested
+    assert "brake pressure 100% -> 99%" not in changes and any(c.startswith("brake pressure 100%") for c in changes)
+    assert not any(c.startswith("front anti-roll bar") for c in changes)   # at 1: the front suspension is used instead
+    assert any(c == "front suspension 5 -> 4" for c in changes)
+    assert setup_model.change({"frontWing": 11}, 2020, "frontWing", 1) is None

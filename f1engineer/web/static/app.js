@@ -96,6 +96,10 @@ function renderState(s) {
       <table class="grid-table"><thead><tr><th>Corner</th><th>Δ s</th><th>Apex</th><th>Why</th></tr></thead><tbody>${rep.corners.map((c) =>
       `<tr><td class="label">${esc(c.corner)}</td><td class="${c.time_loss > 0.02 ? "slower" : c.time_loss < -0.02 ? "faster" : ""}">${sgn(c.time_loss)}</td><td>${c.min_speed}</td><td class="muted" style="text-align:left;font:400 12px var(--font)">${esc(c.causes.slice(0, 2).join("; "))}</td></tr>`).join("")}</tbody></table>`;
   }
+  if (s.plan) {
+    $("plan-goal").textContent = s.plan.goal;
+    $("plan").innerHTML = `<table class="grid-table"><tbody>${s.plan.steps.map((p, i) => `<tr><td class="label" style="white-space:normal">${i + 1 === s.plan.step && !s.plan.finished ? "▶ " : ""}${esc(p.text)}</td><td class="${p.done ? "faster" : "muted"}">${p.done ? "done" : `${p.attempts}/${p.laps}`}</td><td class="muted">${p.best ?? ""}</td></tr>`).join("")}</tbody></table>`;
+  }
   if (s.advice && s.advice.length) $("advice").innerHTML = s.advice.map((a) => `<li><b>${esc(a.change)}</b><br><small>${esc(a.why)}</small></li>`).join("");
 }
 function addRadio(ev) {
@@ -249,9 +253,15 @@ function drawCmpbar() {
       ${tyreBadge(l.compound || m.compound, l.tyre_age ?? m.tyre_age)}
       <span class="delta" style="color:${l === BASE ? "var(--purple)" : "var(--text-2)"}">${l === BASE ? "fastest" : sgn(d)}</span>
       ${l.valid === false ? '<small>invalid</small>' : ""}<button title="Remove" data-rm="${l.id}">×</button></div>`;
-  }).join("") + `<div class="quick"><button class="btn" id="btnBest">+ session best</button><button class="btn" id="btnReset">Reset zoom</button></div>`;
+  }).join("") + `<div class="quick"><button class="btn" id="btnBest">+ session best</button><button class="btn" id="btnOther" title="Your best lap on this track from a different session">+ best from another session</button><button class="btn" id="btnReset">Reset zoom</button></div>`;
   document.querySelectorAll("[data-rm]").forEach((b) => b.onclick = () => toggleLap(+b.dataset.rm));
   $("btnReset").onclick = () => zoom(null);
+  $("btnOther").onclick = () => {
+    const base = LAPS.find((l) => l.id === SEL[0].id);
+    const other = LAPS.filter((l) => l.track === base.track && l.session !== base.session && l.car === "Player" && l.lap_time > 0 && !SEL.find((s) => s.id === l.id))
+      .sort((a, b) => (b.valid - a.valid) || a.lap_time - b.lap_time)[0];
+    if (other) toggleLap(other.id);
+  };
   $("btnBest").onclick = () => {
     const sess = LAPS.find((l) => l.id === SEL[0].id)?.session;
     const best = LAPS.filter((l) => l.session === sess && l.lap_time > 0 && !SEL.find((s) => s.id === l.id)).sort((a, b) => a.lap_time - b.lap_time)[0];

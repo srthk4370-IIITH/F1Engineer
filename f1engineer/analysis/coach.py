@@ -111,6 +111,7 @@ def build_report(lap, lap_rs: dict, ref_rs: dict, ref_label: str, ref_time: floa
             "exit_speed": round(m.exit_speed), "ref_exit_speed": round(m.ref_exit_speed),
             "lockup": m.lockup, "wheelspin": m.wheelspin, "off_track": m.off_track,
             "understeer": round(m.understeer, 4), "causes": _causes(m),
+            "coast_m": round(m.coast_m), "apex_gear": m.apex_gear,
         }
         rep.corners.append(d)
         if m.lockup:
