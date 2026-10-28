@@ -162,3 +162,11 @@ See git log. Modules: telemetry (2020 parser, capture IO), state/tracker (laps, 
 - Tools get_car_status / get_rivals; live snapshot in the system context (tyres, temps, position, delta, nearby cars, last losses).
 - Dashboard: auto-import newest 2 recordings on open (imports table, sessions dated by file mtime), sector times stored per lap (sectors column), timing-tower lap list with purple/green/yellow sectors, map modes speed/gear/pedals/delta, G-G diagram, long-G + DRS traces, analysis panels (lap times, time by corner, apex speed, braking points, gear usage, speed distribution, pedal phases, sectors + ideal lap).
 - gpt-5.4-mini real latency ~2.8 s to first sentence (model TTFT + tool round trip).
+
+### 2026-10-28 (evening) — the AI as the main guide
+- brain.py: lap_summary table (never pruned; one row per player lap with style numbers + per-corner losses), backfill for older laps, progress(), driving_style() (rule labels; relative keys spell the sign: brakes_earlier_than_ref_m etc. — the model misread an ambiguous "vs_ref" sign before), evaluate_strategy() (stint sim: compound pace/wear, cliff 70%, pit loss, two-dry-compound rule, best 0/1/2-stop), DriverProfile (data/driver_profile.json, `remember` tool).
+- Agent: new coach prompt (lead, verdict + numbers + next step, disagree with data-backed reasons, remember goals, one follow-up max); modes radio (effort none, 350 tok) / garage (low, 900) / review (low, 1200); engine picks radio vs garage from speed/pause; conversation history kept across sessions (24 msgs).
+- AI-written garage debrief per lap (background, replaces the template if not yet spoken).
+- Offline dashboard: the engineer is available to chat (brain tools + knowledge) without the game. Chat tab renamed "Engineer", thinking indicator.
+- Sentence splitter only splits on punctuation + whitespace (streaming "1." + "434" was read as "1. 434").
+- Real gpt-5.4-mini check: improving / style / strategy (soft->hard L4 in 10 laps: 3.6 s worse than soft->medium L9) / remember goal / practice plan all grounded and sensible; 2.6–8 s in review mode.

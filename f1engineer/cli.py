@@ -121,7 +121,7 @@ def cmd_dashboard(a) -> None:
     from f1engineer.web.app import ReviewOnly, create_app
     from f1engineer.importer import auto_import
     store = Storage(cfg)
-    review = ReviewOnly(store)
+    review = ReviewOnly(store, cfg.sass)
     server = uvicorn.Server(uvicorn.Config(create_app(review), host="127.0.0.1", port=cfg.web_port, log_level="warning"))
     threading.Thread(target=server.run, daemon=True).start()
     # newest recordings appear by themselves (in the background: the page opens immediately)

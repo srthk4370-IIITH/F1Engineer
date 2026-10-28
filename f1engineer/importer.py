@@ -32,6 +32,8 @@ def import_capture(cfg, store, path: Path, log=print) -> int:
 
 def auto_import(cfg, store, newest: int = 2, log=print, status: dict | None = None) -> None:
     """Import the newest recordings that were not imported yet (forged/simulated captures are skipped)."""
+    from f1engineer import brain
+    brain.backfill(store)   # laps stored before long-term summaries existed
     caps = sorted((p for p in (cfg.data_dir / "captures").glob("*.f1cap") if not p.name.startswith("forged")),
                   key=lambda p: p.stat().st_mtime)[-newest:]
     for p in caps:

@@ -10,12 +10,12 @@ import traceback
 
 import numpy as np
 
-from f1engineer import radio
+from f1engineer import brain, radio
 from f1engineer.coaching import LiveCoach
 from f1engineer.analysis import coach, lapmath as LM, setup_advisor, strategy
 from f1engineer.config import Config
 from f1engineer.llm import knowledge
-from f1engineer.llm.agent import Agent
+from f1engineer.llm.agent import Agent, MockProvider
 from f1engineer.state.tracker import SessionTracker
 from f1engineer.storage import Storage
 from f1engineer.telemetry import packets_2020 as P
@@ -41,11 +41,13 @@ class Engine:
         self.cfg = cfg or Config()
         self.speech = speech or NullSpeech()
         self.store = storage or Storage(self.cfg)
+        self.profile = brain.DriverProfile(self.cfg.data_dir / "driver_profile.json")
         self.tr = SessionTracker()
         self.gaps = strategy.GapTimer()
         self.tyres = strategy.TyreModel()
         self.sched = radio.RadioScheduler(self._say)
-        self.agent = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=provider)
+        self.agent = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=provider,
+                           profile_fn=self.profile.summary)
         self.reports: list[coach.LapReport] = []
         self.ref: dict | None = None          # {"rs": resampled, "time": float, "label": str, "brake_starts": [...]}
         self.corners: list[LM.Corner] = []
@@ -128,6 +130,7 @@ class Engine:
         sock = self.bind_udp()
         threading.Thread(target=self.run_udp, args=(sock,), name="udp", daemon=True).start()
         threading.Thread(target=self._bg_worker, name="bg", daemon=True).start()
+        self._bg_put(brain.backfill, self.store)
         threading.Thread(target=self._tick_loop, name="tick", daemon=True).start()
 
     def stop(self) -> None:
@@ -150,8 +153,7 @@ class Engine:
         self.tyres = strategy.TyreModel()
         self.sched.clear()
         self.coach = LiveCoach(self)
-        self._unanalysed = None
-        self.agent.history.clear()
+        self._unanalysed = None   # (the conversation itself carries on across sessions, like a real engineer)
         self._bg_put(self.store.start_session, tr.session_uid, tr.track, tr.session_type, tr.packet_format)
         # stored personal best becomes the initial reference
         stored = self.store.reference(tr.track)
@@ -216,6 +218,11 @@ class Engine:
             self.tyres.on_lap(lap.lap_num, st)
             self.race = strategy.race_snapshot(tr, self.gaps, self.tyres)
             self.sched.push([radio.race_lap_message(self.race, lap.lap_time)])
+        if lap.complete:
+            try:
+                self._summarise(lap, rep)
+            except Exception:
+                traceback.print_exc()
         self.stats["last_lap_analysis_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         self._bg_put(self.store.save_lap, tr.session_uid, lap, tr.car_name(lap.car_idx),
                      rep.to_dict() if rep else None, self.input_device)
@@ -240,7 +247,46 @@ class Engine:
             self.sched.push(radio.next_lap_messages(rep, self.advice, self._tips_said))
             self.sched.push([radio.Message(6, radio.CLOCK(), radio.lap_debrief_text(rep, self.advice),
                                            "garage", 900, "garage_debrief")])
+            if not isinstance(self.agent.provider, MockProvider):
+                threading.Thread(target=self._ai_debrief, args=(rep.lap_num,), daemon=True).start()
         return rep
+
+    def _ai_debrief(self, lap_num: int) -> None:
+        """The model writes the garage debrief (progress, priorities, a drill); the template stays as a fallback."""
+        try:
+            a = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=self.agent.provider,
+                      profile_fn=self.profile.summary)
+            text = " ".join(a.ask(
+                f"(Engineer's own garage debrief, not a driver question.) Debrief lap {lap_num} for when I'm back in the "
+                "garage: how it compared, whether I'm improving this session, the one or two things to fix next and how, "
+                "and a setup thought only if the data supports it. Under seven sentences.", mode="garage", remember=False))
+            if text and any(m.key == "garage_debrief" for m in self.sched.queue):
+                self.sched.push([radio.Message(6, radio.CLOCK(), text, "garage", 900, "garage_debrief")])
+        except Exception as e:
+            print(f"[engine] AI debrief failed: {e!r}")
+
+    def _summarise(self, lap, rep) -> None:
+        """Long-term memory row for this lap: style numbers + per-corner losses (for progress/style questions)."""
+        tr = self.tr
+        L = self.ref["track_length"] if self.ref else float(lap.arrays["dist"].max())
+        rs = LM.resample(lap.arrays, L)
+        if rs is None:
+            return
+        style = brain.style_metrics(rs, coach.self_review(rs, self.corners) if self.corners else None)
+        corners = None
+        if rep:
+            corners, detail = {}, []
+            for c in rep.corners:
+                corners[c["corner"]] = round(corners.get(c["corner"], 0) + c["time_loss"], 3)
+                detail.append({"corner": c["corner"],
+                               "brakes_earlier_than_ref_m": None if c["brake_point_m"] is None or c["ref_brake_point_m"] is None
+                               else c["brake_point_m"] - c["ref_brake_point_m"],
+                               "apex_speed_above_ref_kmh": c["min_speed"] - c["ref_min_speed"],
+                               "full_throttle_later_than_ref_m": None if c["throttle_on_m"] is None or c["ref_throttle_on_m"] is None
+                               else c["throttle_on_m"] - c["ref_throttle_on_m"]})
+            style["corner_detail"] = detail
+        self._bg_put(self.store.save_summary, tr.session_uid, tr.track, tr.session_type, lap, self.input_device, style,
+                     corners, rep.mistakes if rep else [], rep.ref_label if rep else None)
 
     def _on_sc(self, status: str) -> None:
         if status in ("full", "virtual"):
@@ -263,7 +309,15 @@ class Engine:
             self.speech.ptt(down)
         self._last_buttons = b
 
-    def ask(self, question: str) -> str:
+    def mode(self) -> str:
+        """radio when the car is moving, garage when parked/paused (the engineer can talk longer and think deeper)."""
+        tr = self.tr
+        if tr.telemetry is None or time.time() - tr.last_packet_wall > 3 or tr.paused:
+            return "garage"
+        c = self.ctx()
+        return "garage" if c.get("in_garage") or float(tr.telemetry[tr.player_idx]["speed"]) < 5 else "radio"
+
+    def ask(self, question: str, mode: str | None = None) -> str:
         """Driver question (from STT or dashboard chat). Speaks sentences as they stream in."""
         self._emit({"type": "radio", "role": "driver", "text": question})
         self._bg_put(self.store.log_radio, self.tr.session_uid, "driver", question)
@@ -273,7 +327,7 @@ class Engine:
             random.choice(["Copy, checking.", "Copy. Stand by.", "Understood, one sec."]), 1))
         ack.start()
         try:
-            for s in self.agent.ask(question):
+            for s in self.agent.ask(question, mode=mode or self.mode()):
                 out.append(s)
                 self._say(s, 1)
         finally:
@@ -357,7 +411,8 @@ class Engine:
         """Compact live snapshot sent with every question: simple questions need no tool round trip."""
         tr = self.tr
         best = min((r.lap_time for r in self.reports), default=None)
-        s = (f"track={tr.track}; mode={tr.session_type}; laps_analysed={len(self.reports)}; best_analysed={best}; "
+        s = (f"driver_state={'driving' if self.mode() == 'radio' else 'parked/paused'}; "
+             f"track={tr.track}; mode={tr.session_type}; laps_analysed={len(self.reports)}; best_analysed={best}; "
              f"reference={self.ref['label'] + ' ' + str(round(self.ref['time'], 3)) if self.ref else 'none'}; "
              f"input={self.input_device}; assists={self.reports[-1].assists if self.reports else {}}")
         try:
@@ -412,6 +467,27 @@ class Engine:
                                           "engineDamage", "gearBoxDamage") if st.get(k)}
             out["damage_pct"] = dmg or "none"
         return out or {"error": "no car data yet"}
+
+    def _strategy_defaults(self) -> dict:
+        """Live inputs for the strategy simulator (the driver can override any of them)."""
+        tr, d = self.tr, {}
+        if tr.lapdata is not None:
+            L = tr.lapdata[tr.player_idx]
+            d["current_lap"] = int(L["currentLapNum"]) or 1
+            if float(L["lastLapTime"]) > 0:
+                d["base_lap"] = round(float(L["lastLapTime"]), 2)
+        if tr.session.get("totalLaps"):
+            d["total_laps"] = int(tr.session["totalLaps"])
+        st = tr.status[tr.player_idx] if tr.status and tr.status[tr.player_idx] else {}
+        if st:
+            d["start_compound"] = P.VISUAL_COMPOUND.get(st.get("visualTyreCompound"), "soft").lower()
+            d["tyre_age"] = int(st.get("tyresAgeLaps") or 0)
+        rate = self.tyres.rate()
+        if rate:
+            factor = brain.COMPOUND_WEAR.get(d.get("start_compound", "soft"), 1.0)
+            d["wear_rate_soft"] = rate / factor
+        d["pit_loss"] = strategy.PIT_LOSS.get(tr.track, 21.0)
+        return d
 
     def _rivals(self, around: int = 3) -> dict:
         tr = self.tr
@@ -481,6 +557,7 @@ class Engine:
             "search_knowledge": lambda query="": {"results": knowledge.search(query)},
             "get_car_status": self._car_status,
             "get_rivals": lambda around=3: self._rivals(int(around)),
+            **brain.brain_tools(self.store, self.profile, self._strategy_defaults),
         }
 
     # ---- dashboard state -----------------------------------------------------------

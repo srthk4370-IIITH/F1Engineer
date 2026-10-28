@@ -12,21 +12,42 @@ import re
 import time
 from typing import Callable, Iterator
 
-SYSTEM_PROMPT = """You are the user's F1 race engineer on team radio while they play an F1 video game.
-Personality: calm, concise, numbers-first professional with dry British-pitwall sass (sass level {sass}/3; 0 = none).
-At sass >= 2 you may throw in cheeky banter like "be a man, brake later" or "my nan carries more speed than that",
-but never during safety-critical or strategy-critical calls, and never insult the driver beyond playful teasing.
-You are also a teacher: when asked "why" or "how", explain the driving technique or setup physics simply.
+SYSTEM_PROMPT = """You are the driver's personal race engineer and driving coach for an F1 video game. You work with
+them across sessions: you can look up their whole history, you remember what they tell you, and your job is to make
+them faster, smarter and enjoy it. You are the guide: you lead, you don't just answer.
 
-Rules:
-- Use the tools for every number. Never invent lap times, gaps, corners or setup values.
-- Radio replies: max 2 short sentences unless the driver asks to explain or for a debrief.
-- Speak naturally for text-to-speech: no markdown, no lists, no emojis; say "point three" style numbers briefly.
-- If data is missing, say so in a few words.
-- The context below is a live snapshot (tyres, position, delta, nearby cars, last lap losses). If it already answers
-  the question, answer straight away without calling a tool; use tools for detail.
-- Sound like a real race engineer: calm, direct ("Copy.", "Understood.", "Box, box."), number first, then the instruction.
-Current context: {context}"""
+How you think:
+- Every claim rests on tool data or the live context below. Never invent lap times, gaps, corners, setup values or
+  trends. If data is missing, say exactly what you'd need ("give me three clean laps and I'll tell you").
+- Form your own opinion. If the driver's idea (a strategy, a setup change, a theory about their driving) disagrees with
+  the data, say so plainly and show the number that proves it. If it's a good idea, say why it works and what to watch.
+- "Am I improving?" -> get_progress. "What's my driving style?" -> get_driving_style. "Will this strategy work?" ->
+  evaluate_strategy with their plan (ask the race length if unknown). Then give: a verdict, the one or two numbers
+  behind it, and one concrete next step (a corner to work on, a drill, or a setup change).
+- Teach: explain the why (weight transfer, tyre grip, slip, traction) simply when asked or when it unlocks speed.
+- When the driver shares a goal, preference or fact about themselves, save it with remember. Use the driver profile
+  to personalise advice and to follow up on goals.
+- At most one short follow-up question, and only when it genuinely helps.
+
+How you talk (current mode: {mode}):
+- radio: the driver is on track at speed. One or two short sentences: number first, then the instruction.
+- garage: the car is parked or paused. A real conversation is fine: up to about six sentences, natural and engaging.
+- review: the driver is on the dashboard away from the game. Conversational and thorough, up to about eight sentences.
+- Plain spoken English for text-to-speech: no markdown, no lists, no emojis; numbers said naturally.
+- Personality: calm, direct British pit-wall pro ("Copy.", "Understood.") with dry humour, sass level {sass}/3
+  (0 = none). At sass 2+ cheeky banter like "be a man, brake later" is fine, never during safety or strategy calls,
+  and never more than playful teasing.
+- The live context often already answers simple questions (tyres, position, delta, last lap): then answer directly
+  without a tool call; that is faster on the radio.
+
+Driver profile (things they asked you to remember): {profile}
+Live context: {context}"""
+
+MODES = {  # reasoning effort and answer budget per conversation mode
+    "radio": {"effort": "none", "max_tokens": 350},
+    "garage": {"effort": "low", "max_tokens": 900},
+    "review": {"effort": "low", "max_tokens": 1200},
+}
 
 TOOL_SCHEMAS = [
     ("get_session_overview", "Track, mode, lap count, best/last lap, input device, assists.", {}),
@@ -45,15 +66,33 @@ TOOL_SCHEMAS = [
      "engine temps, fuel margin, ERS, damage.", {}),
     ("get_rivals", "Who I'm racing: cars around my position with gaps, last/best laps, tyre compound and age, pit status.",
      {"around": {"type": "integer", "description": "positions either side (default 3)"}}),
+    ("get_progress", "Long-term progress on a track across all sessions: best and representative pace per session, "
+     "consistency, mistakes per lap, trend, per-corner improvement, first vs second half of this session.",
+     {"track": {"type": "string", "description": "track name; omit for the current/latest track"}}),
+    ("get_driving_style", "The driver's style from recent laps: braking (ramp, trail braking, brake points vs reference), "
+     "apex speeds, throttle use, coasting, lock-ups/offs, input device, with plain-English labels.",
+     {"track": {"type": "string"}}),
+    ("evaluate_strategy", "Simulate race time for a pit plan vs the best 0/1/2-stop alternatives (live race data fills "
+     "the defaults: laps, compound, tyre age, wear rate, lap time, pit loss).",
+     {"stops": {"type": "array", "description": "planned pit stops", "items": {"type": "object", "properties": {
+         "lap": {"type": "integer"}, "compound": {"type": "string", "enum": ["soft", "medium", "hard", "intermediate", "wet"]}}}},
+      "total_laps": {"type": "integer"}, "current_lap": {"type": "integer"},
+      "start_compound": {"type": "string"}, "tyre_age": {"type": "integer"}, "base_lap_s": {"type": "number"},
+      "pit_loss_s": {"type": "number"}}),
+    ("remember", "Save something about the driver for future sessions (goal, preference, recurring problem).",
+     {"note": {"type": "string"}}),
+    ("get_stored_lap", "A stored lap's corner report from the database (works away from the game).",
+     {"lap": {"type": "integer", "description": "lap number; omit for the latest"}}),
 ]
 
 
-def openai_tools() -> list[dict]:
+def openai_tools(names=None) -> list[dict]:
     return [{"type": "function", "function": {"name": n, "description": d,
-             "parameters": {"type": "object", "properties": p, "required": []}}} for n, d, p in TOOL_SCHEMAS]
+             "parameters": {"type": "object", "properties": p, "required": []}}}
+            for n, d, p in TOOL_SCHEMAS if names is None or n in names]
 
 
-_SENT = re.compile(r"(.+?[.!?])(\s+|$)", re.S)
+_SENT = re.compile(r"(.+?[.!?])\s+", re.S)
 
 
 def sentences(chunks: Iterator[str]) -> Iterator[str]:
@@ -83,18 +122,26 @@ class OpenAIProvider:
         self.model = model or os.getenv("OPENAI_MODEL", DEFAULT_MODEL)
         effort = os.getenv("OPENAI_REASONING", "none")
         self._efforts = EFFORT_LADDER[EFFORT_LADDER.index(effort):] if effort in EFFORT_LADDER else [effort]
+        self._efforts += [e for e in ("low", "medium") if e not in self._efforts]
         # learned once per process: params this model rejects are dropped/adjusted, then reused
         self.kw: dict = {"temperature": 0.6, "max_completion_tokens": 600, "reasoning_effort": self._efforts[0]}
 
-    def _create(self, messages, tools):
+    def _create(self, messages, tools, effort=None, max_tokens=None):
         for _ in range(6):
+            kw = dict(self.kw)
+            if max_tokens:
+                kw["max_completion_tokens"] = max_tokens
+            if effort and "reasoning_effort" in kw and effort in self._efforts:
+                kw["reasoning_effort"] = effort   # deeper thinking when there's time (garage / review)
             try:
                 return self.client.chat.completions.create(model=self.model, messages=messages, tools=tools,
-                                                           stream=True, **self.kw)
+                                                           stream=True, **kw)
             except Exception as e:
                 msg = str(e)
                 if "temperature" in msg and "temperature" in self.kw:
                     self.kw.pop("temperature")
+                elif "reasoning" in msg and effort and kw.get("reasoning_effort") == effort != self.kw.get("reasoning_effort"):
+                    effort = None   # the requested deeper effort was rejected: use the learned default
                 elif "reasoning" in msg and "reasoning_effort" in self.kw:
                     cur = self.kw["reasoning_effort"]
                     nxt = self._efforts[self._efforts.index(cur) + 1:] if cur in self._efforts else []
@@ -106,8 +153,8 @@ class OpenAIProvider:
                     raise
         raise RuntimeError(f"{self.model}: could not find accepted parameters ({self.kw})")
 
-    def stream(self, messages: list[dict], tools: list[dict]) -> Iterator[dict]:
-        resp = self._create(messages, tools)
+    def stream(self, messages: list[dict], tools: list[dict], effort=None, max_tokens=None) -> Iterator[dict]:
+        resp = self._create(messages, tools, effort, max_tokens)
         calls: dict[int, dict] = {}
         for ev in resp:
             if not ev.choices:
@@ -130,6 +177,10 @@ class MockProvider:
     """Offline stand-in: picks tools by keyword, then summarises tool output with templates."""
 
     ROUTES = [
+        (("remember",), "remember"),
+        (("improv", "progress", "getting better", "getting faster"), "get_progress"),
+        (("style", "kind of driver", "type of driver"), "get_driving_style"),
+        (("strategy", "one stop", "one-stop", "two stop", "pit on lap", "undercut"), "evaluate_strategy"),
         (("temp", "pressure", "damage", "wear"), "get_car_status"),
         (("racing", "who", "ahead", "behind", "rival", "position", "p1", "place"), "get_rivals"),
         (("tyre", "tire", "gap", "fuel", "ers", "strategy", "box", "pit", "position", "rain", "weather"), "get_race_status"),
@@ -138,7 +189,7 @@ class MockProvider:
         (("corner", "where", "losing", "lose", "lap", "faster", "slow", "wrong", "mistake", "improve", "how"), "get_last_lap_report"),
     ]
 
-    def stream(self, messages: list[dict], tools: list[dict]) -> Iterator[dict]:
+    def stream(self, messages: list[dict], tools: list[dict], **_) -> Iterator[dict]:
         last = messages[-1]
         if last["role"] == "tool":
             data = json.loads(last["content"])
@@ -151,9 +202,11 @@ class MockProvider:
         if hit:
             yield {"type": "tool_call", "id": "mock1", "name": "get_corner_history", "args": json.dumps({"corner": hit.split("/")[0]})}
             return
+        available = {t["function"]["name"] for t in tools}
         for keys, tool in self.ROUTES:
-            if any(k in q for k in keys):
-                yield {"type": "tool_call", "id": "mock1", "name": tool, "args": "{}"}
+            if any(k in q for k in keys) and tool in available:
+                args = json.dumps({"note": last["content"]}) if tool == "remember" else "{}"
+                yield {"type": "tool_call", "id": "mock1", "name": tool, "args": args}
                 return
         yield {"type": "text", "text": "Copy. Ask me about your lap, corners, setup or strategy."}
 
@@ -161,6 +214,26 @@ class MockProvider:
     def _summarise(d: dict) -> str:
         if "error" in d:
             return f"No data yet: {d['error']}."
+        if "saved" in d:
+            return "Copy, noted. I'll keep that in mind."
+        if "sessions" in d:
+            s = d["sessions"]
+            t = d.get("trend")
+            if t:
+                word = "improving" if t["representative_change_s"] < 0 else "not improving yet"
+                return (f"You're {word}: representative pace {t['representative_change_s']:+.2f} seconds and best "
+                        f"{t['best_change_s']:+.2f} since your first session here.")
+            return f"One session so far, best {s[-1]['best']}. Give me another session to measure a trend."
+        if "style_summary" in d:
+            return "Your style: " + "; ".join(d["style_summary"][:3]) + "." if d["style_summary"] else "Not enough laps to read your style yet."
+        if "best_alternatives" in d:
+            b = d["best_alternatives"][0] if d["best_alternatives"] else None
+            if "your_plan_vs_best_s" in d:
+                return f"Your plan is {d['your_plan_vs_best_s']:.1f} seconds off the best option I can find."
+            if b:
+                stops = ", ".join(f"lap {s['lap']} {s['compound']}" for s in b["stops"]) or "no stop"
+                return f"Best option: pit {stops}."
+            return "Not enough data for a strategy."
         if "losses" in d:
             if not d["losses"]:
                 return f"Lap {d['lap_time']}, nothing major lost. Clean."
@@ -201,18 +274,22 @@ class MockProvider:
 
 class Agent:
     def __init__(self, tools: dict[str, Callable[..., dict]], context_fn: Callable[[], str], sass: int = 2,
-                 provider=None):
+                 provider=None, profile_fn: Callable[[], str] = lambda: "nothing yet"):
         self.tools = tools
         self.context_fn = context_fn
+        self.profile_fn = profile_fn
         self.sass = sass
         self.provider = provider or make_provider()
         self.history: list[dict] = []
 
-    def ask(self, question: str, max_rounds: int = 3) -> Iterator[str]:
-        """Yield speakable sentences as soon as they are ready."""
+    def ask(self, question: str, max_rounds: int = 4, mode: str = "radio", remember: bool = True) -> Iterator[str]:
+        """Yield speakable sentences as soon as they are ready. mode: radio | garage | review."""
         t0 = time.perf_counter()
-        sys = {"role": "system", "content": SYSTEM_PROMPT.format(sass=self.sass, context=self.context_fn())}
-        msgs = [sys, *self.history[-8:], {"role": "user", "content": question}]
+        m = MODES.get(mode, MODES["radio"])
+        sys = {"role": "system", "content": SYSTEM_PROMPT.format(sass=self.sass, mode=mode, profile=self.profile_fn(),
+                                                                 context=self.context_fn())}
+        msgs = [sys, *self.history[-12:], {"role": "user", "content": question}]
+        tools = openai_tools(set(self.tools))
         answer = ""
         for _ in range(max_rounds):
             calls = []
@@ -220,13 +297,13 @@ class Agent:
             def text_stream():
                 nonlocal answer
                 try:  # the request fails on the first event (bad model name, no credit, network down)
-                    events = iter(self.provider.stream(msgs, openai_tools()))
+                    events = iter(self.provider.stream(msgs, tools, effort=m["effort"], max_tokens=m["max_tokens"]))
                     first = next(events, None)
                 except Exception as e:
                     print(f"[llm] {type(self.provider).__name__} failed: {str(e)[:300]}")
                     if isinstance(self.provider, MockProvider):
                         raise
-                    events = iter(MockProvider().stream(msgs, openai_tools()))  # this answer comes from the offline brain
+                    events = iter(MockProvider().stream(msgs, tools))  # this answer comes from the offline brain
                     first = next(events, None)
                 for ev in _chain(first, events):
                     if ev["type"] == "text":
@@ -249,7 +326,9 @@ class Agent:
                 except Exception as e:
                     res = {"error": repr(e)}
                 msgs.append({"role": "tool", "tool_call_id": c["id"], "content": json.dumps(res, default=str)[:6000]})
-        self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        if remember:
+            self.history += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+            del self.history[:-24]
         self.last_latency = time.perf_counter() - t0
 
 

@@ -20,6 +20,10 @@ CREATE TABLE IF NOT EXISTS laps(id INTEGER PRIMARY KEY AUTOINCREMENT, session_ui
 CREATE TABLE IF NOT EXISTS radio(id INTEGER PRIMARY KEY AUTOINCREMENT, session_uid TEXT, t REAL, role TEXT, text TEXT);
 CREATE INDEX IF NOT EXISTS laps_session ON laps(session_uid);
 CREATE TABLE IF NOT EXISTS imports(path TEXT PRIMARY KEY, mtime REAL);
+-- long-term memory: one small row per player lap, never pruned by session retention
+CREATE TABLE IF NOT EXISTS lap_summary(id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, track TEXT, session_type TEXT,
+  session_uid TEXT, lap_num INTEGER, lap_time REAL, valid INTEGER, input TEXT, assists TEXT, style TEXT, corners TEXT,
+  mistakes TEXT, ref_label TEXT, UNIQUE(session_uid, lap_num, lap_time));
 """
 
 
@@ -98,6 +102,17 @@ class Storage:
                  json.dumps([int(x) for x in lap.sector_ms]) if any(lap.sector_ms) else None))
             self.db.commit()
             return cur.lastrowid
+
+    def save_summary(self, uid, track: str, stype: str, lap, input_device: str, style: dict, corners: dict | None,
+                     mistakes: list, ref_label: str | None) -> None:
+        with self.lock:
+            self.db.execute(
+                "INSERT OR IGNORE INTO lap_summary(ts,track,session_type,session_uid,lap_num,lap_time,valid,input,assists,style,"
+                "corners,mistakes,ref_label) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (self.session_clock or time.time(), track, stype, str(uid), lap.lap_num, lap.lap_time, int(not lap.invalid),
+                 input_device, json.dumps(lap.assists), json.dumps(style), json.dumps(corners) if corners else None,
+                 json.dumps(mistakes), ref_label))
+            self.db.commit()
 
     def log_radio(self, uid: int, role: str, text: str) -> None:
         with self.lock:

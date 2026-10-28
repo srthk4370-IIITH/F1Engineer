@@ -185,3 +185,38 @@ def test_live_coaching_on_real_capture():
     assert re.search(r"Sector (one|two)", text)
     assert "Lap 1:29.098" in text and "Lap 1:34.598" in text  # lap summaries are not crowded out
     assert not re.search(r"\b\d{2,}\.\d seconds", text)     # no nonsense deltas around the line
+
+
+def test_brain_strategy_and_profile(tmp_path):
+    from f1engineer import brain
+    r = brain.evaluate_strategy([{"lap": 4, "compound": "hard"}], total_laps=10, base_lap=89.5, pit_loss=20.5)
+    assert r["your_plan"]["race_time_s"] > 0 and r["best_alternatives"]
+    assert all(not any("illegal" in w for w in b["warnings"]) for b in r["best_alternatives"])
+    one = brain.evaluate_strategy([{"lap": 4, "compound": "soft"}], total_laps=10)
+    assert any("two" in w for w in one["your_plan"]["warnings"])        # single dry compound flagged
+    p = brain.DriverProfile(tmp_path / "profile.json")
+    p.remember("Goal: 1:27 flat at Silverstone")
+    assert "1:27" in brain.DriverProfile(tmp_path / "profile.json").summary()
+
+
+@pytest.mark.skipif(not REAL.exists(), reason="real capture not present")
+def test_brain_progress_and_style_from_real_session():
+    from f1engineer import brain
+    from f1engineer.config import Config
+    from f1engineer.engine import Engine
+    from f1engineer.storage import Storage
+    from f1engineer.telemetry.capture import read_capture
+    cfg = Config()
+    cfg.data_dir = Path(tempfile.mkdtemp())
+    st = Storage(cfg)
+    e = Engine(cfg, storage=st)
+    e.speech.say = lambda *a: None
+    for _, d in read_capture(REAL):
+        e.feed(d)
+    e.drain()
+    prog = brain.progress(st, "Silverstone")
+    assert prog["sessions"] and prog["sessions"][-1]["best"] < 91
+    style = brain.driving_style(st)
+    assert style["style_summary"] and "keyboard" in style["input_devices"]
+    ans = " ".join(e.agent.ask("Am I improving?", mode="garage"))   # offline brain routes to get_progress
+    assert "session" in ans.lower() or "improv" in ans.lower()

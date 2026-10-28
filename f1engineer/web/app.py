@@ -22,19 +22,33 @@ TRACE_KEYS = ("dist", "t", "speed", "throttle", "brake", "gear", "rpm", "steer",
 
 
 class ReviewOnly:
-    """Stand-in engine for `f1engineer dashboard`: stored laps only, no telemetry, no radio."""
+    """Stand-in engine for `f1engineer dashboard`: stored laps only, no telemetry, no radio - but the engineer is
+    there to talk to, with the whole history (progress, style, stored laps, strategy maths, memory)."""
 
-    def __init__(self, store):
+    def __init__(self, store, sass: int = 2):
+        from f1engineer import brain
+        from f1engineer.llm import knowledge
+        from f1engineer.llm.agent import Agent
         self.store = store
         self.ref = None
         self.listeners: list = []
         self.status: dict = {"importing": None}
+        self.profile = brain.DriverProfile(store.root / "driver_profile.json")
+        tools = {**brain.brain_tools(store, self.profile),
+                 "search_knowledge": lambda query="": {"results": knowledge.search(query)}}
+        self.agent = Agent(tools, self._context, sass=sass, profile_fn=self.profile.summary)
 
     def live_state(self) -> dict:
         return {"connected": False, "offline": True, "importing": self.status.get("importing")}
 
+    def _context(self) -> str:
+        laps = self.store.list_laps()[:12]
+        recent = ", ".join(f"{l['track']} L{l['lap']} {l['lap_time']:.3f}{'' if l['valid'] else ' invalid'}"
+                           for l in laps if l["car"] == "Player")
+        return f"driver_state=away from the game, reviewing on the dashboard; recent stored laps: {recent or 'none'}"
+
     def ask(self, q: str) -> str:
-        return "I'm off the pit wall. Start the game and I'll talk."
+        return " ".join(self.agent.ask(q, mode="review"))
 
 
 def create_app(engine) -> FastAPI:

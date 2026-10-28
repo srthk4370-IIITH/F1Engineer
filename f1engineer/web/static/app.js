@@ -88,10 +88,14 @@ function connect() {
 }
 $("chatform").onsubmit = async (e) => {
   e.preventDefault(); const q = $("q").value.trim(); if (!q) return; $("q").value = "";
+  if (OFFLINE) addRadio({ role: "driver", text: q });
+  const thinking = document.createElement("div"); thinking.className = "msg thinking"; thinking.textContent = "…thinking";
+  $("radio-all").appendChild(thinking); $("radio-all").scrollTop = $("radio-all").scrollHeight;
   try {
     const r = await (await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ q }) })).json();
-    if (OFFLINE) { addRadio({ role: "driver", text: q }); addRadio({ role: "engineer", text: r.answer }); }
+    if (OFFLINE) addRadio({ role: "engineer", text: r.answer });
   } catch (err) { addRadio({ role: "engineer", text: "Radio's down: " + err }); }
+  finally { thinking.remove(); }
 };
 
 // ================================================================ review: helpers

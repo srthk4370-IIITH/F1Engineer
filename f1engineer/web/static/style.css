@@ -172,3 +172,4 @@ canvas.sq { width: 100%; aspect-ratio: 1; display: block; }
 .analysis canvas { width: 100%; display: block; }
 table.sectab td.p { color: var(--purple); font-weight: 700; } table.sectab td.g { color: var(--green); font-weight: 700; }
 table.sectab td.y { color: var(--yellow); }
+.msg.thinking { color: var(--dim); font-style: italic; border-left-color: var(--line); }
