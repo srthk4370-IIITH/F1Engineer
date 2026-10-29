@@ -236,7 +236,7 @@ class Engine:
                 if first is not None and radio.CLOCK() - self._unanalysed_at < 30:
                     self._analyse(first)
             if lap.complete and (tr.is_time_trial or lap.car_idx < 22):
-                self._bg_put(self.store.save_lap, tr.session_uid, lap, tr.car_name(lap.car_idx), None, "")
+                self._bg_put(self.store.save_lap, tr.session_uid, lap, tr.car_name(lap.car_idx), None, "", False)
             return
         t0 = time.perf_counter()
         self.input_device = coach.detect_input_device(lap.arrays) if lap.n() > 100 else self.input_device
@@ -294,7 +294,7 @@ class Engine:
         self.stats["last_lap_analysis_ms"] = round((time.perf_counter() - t0) * 1000, 1)
         lap.setup = dict(tr.setup) if tr.setup else None   # each lap remembers the setup it was driven on
         self._bg_put(self.store.save_lap, tr.session_uid, lap, tr.car_name(lap.car_idx),
-                     rep.to_dict() if rep else None, self.input_device)
+                     rep.to_dict() if rep else None, self.input_device or "unknown", True)
         self._emit({"type": "lap", "lap": lap.lap_num, "time": lap.lap_time, "valid": not lap.invalid,
                     "report": rep.to_dict() if rep else None})
 

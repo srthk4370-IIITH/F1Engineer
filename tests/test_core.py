@@ -563,3 +563,30 @@ def test_live_radio_stays_fresh_and_tidy():
     finally:
         radio.CLOCK = old
     assert said == ["hot 113", "still 121"]
+
+
+def test_final_lap_is_closed_at_the_flag():
+    """At the chequered flag the lap number doesn't go up: the finished lap must still be recorded (every car)."""
+    import numpy as np
+
+    from f1engineer.state.tracker import SessionTracker
+    from f1engineer.telemetry import packets_2020 as P
+    tr = SessionTracker()
+    done = []
+    tr.on("lap_complete", lambda lap: done.append((lap.car_idx, lap.lap_num, round(lap.lap_time, 1), lap.complete)))
+    pkt = np.zeros(1, dtype=P.LAP_DATA)[0]
+    L = pkt["lapData"][3]
+
+    def send(lap, t, dist, last, status):
+        L["currentLapNum"], L["currentLapTime"], L["lapDistance"], L["lastLapTime"], L["resultStatus"] = lap, t, dist, last, status
+        tr._on_lap_data(pkt, 0.0)
+        c = tr.cars[3]
+        if c.lap is not None:
+            c.lap.append({"dist": dist, "t": t})
+    for k in range(40):                              # lap 5, the last one
+        send(5, k * 2.3, k * 140.0, 91.5, 2)
+    send(5, 92.0, 5600.0, 91.5, 3)                    # finished, but the game hasn't updated the last lap time yet
+    assert done == []
+    send(5, 0.1, 10.0, 92.4, 3)                       # now it has: lap 5 closes once, with its own time
+    send(5, 0.2, 20.0, 92.4, 3)
+    assert done == [(3, 5, 92.4, True)]

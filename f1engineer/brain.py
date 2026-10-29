@@ -353,7 +353,7 @@ def brain_tools(store, profile: DriverProfile, defaults=lambda: {}) -> dict:
 
 def lap_detail_from_store(store, which: str | int = "latest") -> dict:
     """A stored lap's corner report (offline: works from the database)."""
-    laps = [l for l in store.list_laps() if l["car"] == "Player"]
+    laps = [l for l in store.list_laps() if l["me"]]
     if not laps:
         return {"error": "no laps stored"}
     lap = laps[0] if which in ("latest", None) else next((l for l in laps if l["lap"] == int(which)), None)
@@ -378,7 +378,7 @@ def backfill(store) -> int:
         rows = store.db.execute(
             "SELECT l.id, l.session_uid, s.track, s.type, s.started, l.lap_num, l.lap_time, l.valid, l.input_device, "
             "l.assists, l.report, l.trace FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid "
-            "WHERE l.car_name='Player' ORDER BY l.id").fetchall()
+            "WHERE l.me=1 ORDER BY l.id").fetchall()
     n = 0
     for (lid, uid, track, stype, started, lap_num, lap_time, valid, inp, assists, report, trace) in rows:
         if (uid, lap_num) in have or not track:
@@ -425,7 +425,7 @@ def _player_laps(store, track: str) -> list[dict]:
     with store.lock:
         rows = store.db.execute(
             "SELECT l.id, l.session_uid, s.started, l.lap_num, l.lap_time, l.valid, l.setup, l.trace, l.report, l.sectors "
-            "FROM laps l JOIN sessions s ON s.uid=l.session_uid WHERE l.car_name='Player' AND lower(s.track)=lower(?) "
+            "FROM laps l JOIN sessions s ON s.uid=l.session_uid WHERE l.me=1 AND lower(s.track)=lower(?) "
             "AND l.lap_time > 0 ORDER BY s.started, l.lap_num", (track,)).fetchall()
     keys = ("id", "session", "started", "lap", "lap_time", "valid", "setup", "trace", "report", "sectors")
     out = [dict(zip(keys, r)) for r in rows]

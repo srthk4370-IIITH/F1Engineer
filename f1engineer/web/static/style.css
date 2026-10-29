@@ -258,3 +258,17 @@ ul.advice { margin: 0; padding-left: 18px; } ul.advice li { margin-bottom: 6px; 
 .mem b { display: block; font-weight: 600; } .mem small { display: block; }
 .mem .tag { font: 700 11px var(--num); text-transform: uppercase; letter-spacing: .8px; color: var(--text-2); }
 .mem .tag.note { color: var(--text-3); }
+
+/* ---------- boards ---------- */
+.filters { display: flex; flex-wrap: wrap; gap: 10px 16px; align-items: center; margin-bottom: 12px; }
+.filters label { color: var(--text-2); display: flex; gap: 8px; align-items: center; font-size: 13px; }
+.filters label.check { gap: 6px; cursor: pointer; }
+.board td.nm, .sboard td.nm { text-align: left; font: 600 13.5px var(--font); }
+.board tr.me td, .sboard tr.me td { background: #1f2229; }
+.you { font: 800 10px var(--num); color: var(--accent); border: 1px solid var(--accent); border-radius: 4px; padding: 0 4px; margin-left: 6px; }
+.board tbody tr, .sboard tbody tr td.lt { cursor: pointer; }
+.sboard td { font-size: 13px; padding: 6px 7px; }
+.sboard td.lt:hover { text-decoration: underline; }
+.sboard td.inv { color: var(--text-3); text-decoration: line-through; }
+.group-h { font: 700 13px var(--num); letter-spacing: .4px; margin: 14px 0 6px; color: var(--text-2); }
+.group-h:first-child { margin-top: 0; }

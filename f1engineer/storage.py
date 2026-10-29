@@ -52,6 +52,10 @@ class Storage:
                          ("setup", "TEXT")):   # added after release 1
             if col not in cols:
                 self.db.execute(f"ALTER TABLE laps ADD COLUMN {col} {typ}")
+        if "me" not in cols:   # your laps, whatever car you drive (a race as Hamilton is still you)
+            self.db.execute("ALTER TABLE laps ADD COLUMN me INTEGER DEFAULT 0")
+            self.db.execute("UPDATE laps SET me=1 WHERE car_name='Player' OR coalesce(input_device,'')!=''")
+            self.db.commit()
         self.session_clock: float | None = None  # importer: date sessions by the recording, not by now
         self.lock = threading.Lock()
 
@@ -123,7 +127,8 @@ class Storage:
         return out
 
     # --- laps -------------------------------------------------------------
-    def save_lap(self, uid: int, lap, car_name: str, report: dict | None, input_device: str) -> int | None:
+    def save_lap(self, uid: int, lap, car_name: str, report: dict | None, input_device: str, me: bool | None = None) -> int | None:
+        me = bool(input_device) if me is None else me   # only the player's laps carry an input device
         if not self.can_write():
             return None
         with self.lock:  # same lap delivered twice (e.g. a replay of the same session): keep one
@@ -137,13 +142,13 @@ class Storage:
         with self.lock:
             cur = self.db.execute(
                 "INSERT INTO laps(session_uid,car_idx,car_name,lap_num,lap_time,valid,input_device,assists,report,trace,created,"
-                "sectors,compound,tyre_age,setup) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "sectors,compound,tyre_age,setup,me) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (str(uid), lap.car_idx, car_name, lap.lap_num, lap.lap_time, int(not lap.invalid), input_device,
                  json.dumps(lap.assists), json.dumps(report, default=str) if report else None,
                  str(trace.relative_to(self.root)), self.session_clock or time.time(),
                  json.dumps([int(x) for x in lap.sector_ms]) if any(lap.sector_ms) else None,
                  getattr(lap, "compound", "") or None, getattr(lap, "tyre_age", None),
-                 json.dumps(lap.setup) if getattr(lap, "setup", None) else None))
+                 json.dumps(lap.setup) if getattr(lap, "setup", None) else None, int(me)))
             self.db.commit()
             return cur.lastrowid
 
@@ -184,16 +189,17 @@ class Storage:
         with self.lock:
             rows = self.db.execute(
                 "SELECT l.id,l.session_uid,s.track,s.type,l.car_idx,l.car_name,l.lap_num,l.lap_time,l.valid,l.input_device,"
-                "l.assists,l.created,l.sectors,l.compound,l.tyre_age,json_extract(l.report,'$.compound') "
+                "l.assists,l.created,l.sectors,l.compound,l.tyre_age,json_extract(l.report,'$.compound'),l.me,s.started "
                 "FROM laps l LEFT JOIN sessions s ON s.uid=l.session_uid "
-                "ORDER BY s.started DESC, l.id DESC LIMIT 300").fetchall()
+                "ORDER BY s.started DESC, l.id DESC LIMIT 6000").fetchall()
         keys = ("id", "session", "track", "type", "car_idx", "car", "lap", "lap_time", "valid", "input", "assists", "created",
-                "sectors", "compound", "tyre_age", "report_compound")
+                "sectors", "compound", "tyre_age", "report_compound", "me", "started")
         out = [dict(zip(keys, r)) for r in rows]
         for d in out:
             d["sectors"] = json.loads(d["sectors"]) if d["sectors"] else None
             from_report = d.pop("report_compound")
             d["compound"] = d["compound"] or from_report or None   # older laps: compound from their report
+            d["me"] = bool(d["me"])
         return out
 
     def was_imported(self, path: Path) -> bool:

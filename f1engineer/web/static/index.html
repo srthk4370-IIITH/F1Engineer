@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&family=Saira+Semi+Condensed:wght@500;600;700;800&display=swap">
 <link rel="stylesheet" href="/static/vendor/uPlot.min.css">
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 </head>
 <body>
 <header class="top">
@@ -86,13 +86,23 @@
     </div>
   </section>
 
-  <!-- ============ TIMING: the full tower ============ -->
+  <!-- ============ TIMING: live tower + the lap board of every stored lap ============ -->
   <section id="tab-timing" class="hidden">
-    <div id="timing-wait" class="empty hidden"><h2>No live session</h2>
-      <p>Live timing appears while the game is running. Past sessions are under <a href="#sessions" data-go="sessions">Sessions</a>.</p></div>
-    <div class="card" id="timing-card">
+    <div class="card hidden" id="timing-card">
       <div class="card-h">Live timing <small id="ft-note"></small></div>
       <div class="tablewrap"><table id="fulltower" class="grid-table tower-full"></table></div>
+    </div>
+    <div class="card">
+      <div class="card-h">Lap board <small id="lb-note"></small></div>
+      <div class="filters">
+        <label>Circuit <select id="lb-track"></select></label>
+        <label>Mode <select id="lb-mode"><option value="all">All modes</option><option value="race">Race</option>
+          <option value="quali">Qualifying</option><option value="practice">Practice</option><option value="tt">Time Trial</option></select></label>
+        <label>Drivers <select id="lb-who"><option value="all">Everyone</option><option value="me">You</option><option value="others">Everyone else</option></select></label>
+        <label>Show <select id="lb-show"><option value="best">Best lap per driver</option><option value="all">Every lap</option></select></label>
+        <label class="check"><input type="checkbox" id="lb-valid" checked> Valid laps only</label>
+      </div>
+      <div class="tablewrap"><table id="lapboard" class="grid-table board"></table></div>
     </div>
   </section>
 
@@ -152,18 +162,28 @@
     </div>
   </section>
 
-  <!-- ============ SESSIONS: history ============ -->
+  <!-- ============ SESSIONS: one session, everyone's laps ============ -->
   <section id="tab-sessions" class="hidden">
     <div class="toolbar"><label>Session <select id="timing-session"></select></label><small id="sess-sum"></small></div>
     <div id="sess-empty" class="empty hidden"><h2>No sessions yet</h2><p>Drive with the game running and your laps show up here.</p></div>
     <div id="sess-content">
+      <div class="card">
+        <div class="card-h">All laps <small id="sb-note"></small>
+          <span class="seg" id="sb-group"><button data-g="driver" class="on">By driver</button><button data-g="lap">By lap</button><button data-g="time">By time</button></span></div>
+        <div class="filters" id="sb-time-f">
+          <label>Window <select id="sb-bucket"><option value="2">2 min</option><option value="5" selected>5 min</option><option value="10">10 min</option><option value="15">15 min</option></select></label>
+          <label>From <select id="sb-from"></select></label><label>to <select id="sb-to"></select></label>
+        </div>
+        <div class="filters" id="sb-lap-f"><label>Lap <select id="sb-lap"></select></label></div>
+        <div id="sessboard" class="tablewrap"></div>
+      </div>
       <div class="timing-grid">
         <div class="card">
-          <div class="card-h">Lap times <small>purple = session best · green = improvement · click a lap to analyse it</small></div>
+          <div class="card-h">Your laps <small>purple = session best · green = improvement · click a lap to analyse it</small></div>
           <div class="tablewrap"><table id="timing" class="grid-table timing"></table></div>
         </div>
         <div class="card">
-          <div class="card-h">Lap time progression <small>ring colour = tyre</small></div>
+          <div class="card-h">Your lap time progression <small>ring colour = tyre</small></div>
           <canvas id="c-laps" data-h="230"></canvas>
         </div>
       </div>
@@ -174,7 +194,7 @@
         <div class="card"><div class="card-h">Tyres <small>stints and wear</small></div><div id="r-stints"></div><div id="r-wear"></div></div>
       </div>
       <div class="card">
-        <div class="card-h">Mini-sectors <small id="ms-note">segment times, purple = best of the session</small></div>
+        <div class="card-h">Your mini-sectors <small id="ms-note">segment times, purple = best of the session</small></div>
         <div class="tablewrap"><table id="minisectors" class="grid-table ms"></table></div>
       </div>
     </div>
@@ -191,6 +211,6 @@
   </section>
 </main>
 <script src="/static/vendor/uPlot.iife.min.js"></script>
-<script src="/static/app.js?v=4"></script>
+<script src="/static/app.js?v=5"></script>
 </body>
 </html>

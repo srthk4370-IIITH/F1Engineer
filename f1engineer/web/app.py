@@ -44,7 +44,7 @@ class ReviewOnly:
     def _context(self) -> str:
         laps = self.store.list_laps()[:12]
         recent = ", ".join(f"{l['track']} L{l['lap']} {l['lap_time']:.3f}{'' if l['valid'] else ' invalid'}"
-                           for l in laps if l["car"] == "Player")
+                           for l in laps if l["me"])
         return f"driver_state=away from the game, reviewing on the dashboard; recent stored laps: {recent or 'none'}"
 
     def ask(self, q: str) -> str:

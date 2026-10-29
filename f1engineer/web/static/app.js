@@ -23,7 +23,7 @@ const tAt = (lap, d) => interp(d, lap.trace.dist, lap.trace.t);
 const TYRE = { soft: "S", medium: "M", hard: "H", inter: "I", intermediate: "I", wet: "W" };
 const tyreBadge = (c, age) => c && c !== "?" ? `<span class="tyre ${esc(String(c).toLowerCase().replace("intermediate", "inter"))}" title="${esc(c)}${age != null ? `, ${age} laps old` : ""}">${TYRE[String(c).toLowerCase()] || "?"}</span>` : `<span class="muted">-</span>`;
 const isGhost = (l) => /personal best|rival|ghost/i.test(l.car || "");
-const lapLabel = (l) => l.car === "Player" ? `Lap ${l.lap}` : isGhost(l) ? "PB ghost" : `${(l.car || "Car").split(" ").pop()} L${l.lap}`;
+const lapLabel = (l) => l.me ? `Lap ${l.lap}` : isGhost(l) ? "PB ghost" : `${(l.car || "Car").split(" ").pop()} L${l.lap}`;
 const EXPANDED = new Set();   // sessions whose other-driver laps are unfolded
 const sessDate = (ts) => ts ? new Date(ts * 1000).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 function fitCanvas(c, hCss) {
@@ -54,7 +54,7 @@ function showTab(t) {
   TABS.forEach((k) => $("tab-" + k).classList.toggle("hidden", k !== t));
   if (t === "laps") requestAnimationFrame(resizeAll);
   if (t === "live") requestAnimationFrame(() => { mapKey = null; drawLiveMap(); });
-  if (t === "timing" && LIVE) renderFullTower(STATE);
+  if (t === "timing") { if (LIVE) renderFullTower(STATE); drawBoard(); }
   if (t === "sessions") drawSession();
   if (t === "engineer") loadMemory();
 }
@@ -78,7 +78,7 @@ function renderState(s) {
   $("conn-t").textContent = s.offline ? "review mode" : s.connected ? "live" : "waiting for game";
   $("strip").classList.toggle("hidden", !LIVE);
   $("live-wait").classList.toggle("hidden", LIVE); $("live-grid").classList.toggle("hidden", !LIVE); $("live-more").classList.toggle("hidden", !LIVE);
-  $("timing-wait").classList.toggle("hidden", LIVE); $("timing-card").classList.toggle("hidden", !LIVE);
+  $("timing-card").classList.toggle("hidden", !LIVE);
   if (s.offline) {
     $("wait-h").textContent = "Review mode";
     $("wait-p").innerHTML = 'Not connected to the game. Your laps are under <a href="#laps" data-go="laps">Lap analysis</a> and <a href="#sessions" data-go="sessions">Sessions</a>.';
@@ -296,11 +296,13 @@ async function loadLaps() {
   const by = new Map();
   for (const l of LAPS) { if (!by.has(l.session)) by.set(l.session, { id: l.session, track: l.track, type: l.type, created: l.created, laps: [] }); by.get(l.session).laps.push(l); }
   SESSIONS = [...by.values()].sort((a, b) => b.created - a.created);
-  for (const s of SESSIONS) s.laps.sort((a, b) => (b.car === "Player") - (a.car === "Player") || a.lap - b.lap || a.id - b.id);
-  renderLapList(); fillSessionSelects();
+  for (const s of SESSIONS) s.laps.sort((a, b) => !!b.me - !!a.me || a.lap - b.lap || a.id - b.id);
+  renderLapList(); fillSessionSelects(); fillBoardFilters();
+  if (TAB === "timing") drawBoard();
+  if (TAB === "sessions") drawSession();
 }
 function sectorClasses(laps) {   // F1 timing: purple session best, green personal improvement, yellow slower
-  const out = new Map(), withS = laps.filter((l) => l.sectors && l.car === "Player").sort((a, b) => a.lap - b.lap || a.id - b.id);
+  const out = new Map(), withS = laps.filter((l) => l.sectors && l.me).sort((a, b) => a.lap - b.lap || a.id - b.id);
   const best = [0, 1, 2].map((k) => Math.min(...withS.map((l) => l.sectors[k] || 1e9)));
   const run = [1e9, 1e9, 1e9];
   for (const l of withS) out.set(l.id, l.sectors.map((v, k) => { const c = v === best[k] ? "p" : v < run[k] ? "g" : "y"; run[k] = Math.min(run[k], v); return c; }));
@@ -315,7 +317,7 @@ function renderLapList() {
     return `<div class="sess ${off ? "off" : ""}" title="${off ? "Different track: comparing laps from different tracks makes no sense" : ""}">
       <div class="sess-h"><b>${esc(s.track || "?")}</b><small>${esc(s.type || "")}<br>${sessDate(s.created)}</small></div>` +
       (() => {
-        const mine = s.laps.filter((l) => l.car === "Player" || isGhost(l)), others = s.laps.filter((l) => !mine.includes(l));
+        const mine = s.laps.filter((l) => l.me || isGhost(l)), others = s.laps.filter((l) => !mine.includes(l));
         const shown = EXPANDED.has(s.id) ? [...mine, ...others.sort((a, b) => a.lap_time - b.lap_time)] : mine;
         return shown.map((l) => lapRow(l, s, sc, best, off)).join("") + (others.length
           ? `<button class="btn more" data-sess="${esc(s.id)}">${EXPANDED.has(s.id) ? "Hide" : "Show"} other drivers (${others.length} laps)</button>` : "");
@@ -328,11 +330,11 @@ function lapRow(l, s, sc, best, off) {
         const sel = SEL.find((x) => x.id === l.id), col = sel ? LAPCOL()[sel.slot] : null;
         return `<div class="lap ${sel ? "sel" : ""} ${off ? "disabled" : ""}" data-id="${l.id}">
           <span class="chk" style="${col ? `background:${col};border-color:${col}` : ""}"></span>
-          <span class="n">${l.car === "Player" ? "L" + l.lap : isGhost(l) ? '<span class="ghost-tag">PB</span>' : `<span class="ghost-tag" title="${esc(l.car)}">${esc((l.car || "?").split(" ").pop().slice(0, 3).toUpperCase())}</span>`}</span>
+          <span class="n">${l.me ? "L" + l.lap : isGhost(l) ? '<span class="ghost-tag">PB</span>' : `<span class="ghost-tag" title="${esc(l.car)}">${esc((l.car || "?").split(" ").pop().slice(0, 3).toUpperCase())}</span>`}</span>
           <span class="t ${best && best.id === l.id ? "best" : ""} ${l.valid ? "" : "inv"}">${fmt(l.lap_time)}</span>
           ${tyreBadge(l.compound, l.tyre_age)}
           <span class="meta">${sc.has(l.id) ? `<span class="secs">${sc.get(l.id).map((c) => `<i class="${c}"></i>`).join("")}</span>` : ""}
-            <span class="inp">${l.input === "keyboard" ? "keyboard" : l.input ? "pad/wheel" : l.car === "Player" ? "" : isGhost(l) ? "ghost" : "AI"}</span></span></div>`;
+            <span class="inp">${l.input === "keyboard" ? "keyboard" : l.input ? "pad/wheel" : l.me ? "" : isGhost(l) ? "ghost" : "AI"}</span></span></div>`;
 }
 async function toggleLap(id) {
   const lap = LAPS.find((l) => l.id === id), track = selTrack();
@@ -405,7 +407,7 @@ function drawCmpbar() {
   $("btnReset").onclick = () => zoom(null);
   $("btnOther").onclick = () => {
     const base = LAPS.find((l) => l.id === SEL[0].id);
-    const other = LAPS.filter((l) => l.track === base.track && l.session !== base.session && l.car === "Player" && l.lap_time > 0 && !SEL.find((s) => s.id === l.id))
+    const other = LAPS.filter((l) => l.track === base.track && l.session !== base.session && l.me && l.lap_time > 0 && !SEL.find((s) => s.id === l.id))
       .sort((a, b) => (b.valid - a.valid) || a.lap_time - b.lap_time)[0];
     if (other) toggleLap(other.id);
   };
@@ -628,12 +630,15 @@ function fillSessionSelects() {
   ts.innerHTML = SESSIONS.map(opt).join(""); if (curT) ts.value = curT;
 }
 $("timing-session").onchange = () => drawSession();
+let lastSessShown = null;
 function drawSession() {
   const s = SESSIONS.find((x) => x.id === $("timing-session").value) || SESSIONS[0];
   $("sess-empty").classList.toggle("hidden", !!s); $("sess-content").classList.toggle("hidden", !s);
   if (!s) return;
-  const mine = s.laps.filter((l) => l.car === "Player" && l.lap_time > 0), best = mine.reduce((b, l) => Math.min(b, l.lap_time), 1e9);
+  const mine = s.laps.filter((l) => l.me && l.lap_time > 0), best = mine.reduce((b, l) => Math.min(b, l.lap_time), 1e9);
   $("sess-sum").textContent = `${mine.length} laps · best ${fmt(best < 1e9 ? best : 0)}`;
+  if (s.id !== lastSessShown) { lastSessShown = s.id; fillSessFilters(s); } else fillSessFilters(s, true);
+  drawSessBoard();
   drawTiming();
   const race = (s.type || "").startsWith("Race");
   $("race-content").classList.toggle("hidden", !race);
@@ -641,7 +646,7 @@ function drawSession() {
 }
 async function drawTiming() {
   const s = SESSIONS.find((x) => x.id === $("timing-session").value) || SESSIONS[0]; if (!s) return;
-  const laps = s.laps.filter((l) => l.car === "Player" && l.lap_time > 0).sort((a, b) => a.lap - b.lap || a.id - b.id);
+  const laps = s.laps.filter((l) => l.me && l.lap_time > 0).sort((a, b) => a.lap - b.lap || a.id - b.id);
   const sc = sectorClasses(laps), best = Math.min(...laps.map((l) => l.lap_time));
   const withS = laps.filter((l) => l.sectors && l.sectors.every((v) => v > 0)), bestS = [0, 1, 2].map((k) => Math.min(...withS.map((l) => l.sectors[k])));
   $("timing").innerHTML = `<thead><tr><th>Lap</th><th>Time</th><th>Gap</th><th>S1</th><th>S2</th><th>S3</th><th>Tyre</th><th>Input</th><th>Status</th></tr></thead><tbody>` +
@@ -717,6 +722,112 @@ async function drawRace(id) {
     axes: ax("max wear %"), scales: { x: { time: false }, y: { range: [0, 100] } }, cursor: { sync: { key: "race" } } }, [laps, wear], el));
 }
 
+// ---------------------------------------------------------------- lap board (Timing) and session board (Sessions)
+const MODE = (t) => !t ? "other" : t.startsWith("Race") ? "race" : t === "Time Trial" ? "tt" : /^(Q|OSQ|Short Q)/.test(t) ? "quali" : /^(P|Short P)/.test(t) ? "practice" : "other";
+const MODE_NAME = { race: "Race", quali: "Qualifying", practice: "Practice", tt: "Time Trial", other: "Other" };
+const driverKey = (l) => l.me ? "__me" : l.car || "?";
+const driverCell = (l) => l.me ? `You${l.car && l.car !== "Player" ? ` <small>(${esc(surname(l.car))})</small>` : ""}<span class="you">YOU</span>`
+  : isGhost(l) ? "PB ghost" : esc(surname(l.car));
+function sec3(l) {   // three sector times in s, or null
+  const s = l.sectors;
+  if (!s || s.length < 2 || !(s[0] > 0) || !(s[1] > 0)) return null;
+  const s3 = s[2] > 0 ? s[2] / 1000 : l.lap_time - (s[0] + s[1]) / 1000;
+  return [s[0] / 1000, s[1] / 1000, s3];
+}
+function openLap(id) { SEL = []; toggleLap(id).then(() => goTab("laps")); }
+
+function fillBoardFilters() {
+  const sel = $("lb-track"), cur = sel.value, recent = new Map();
+  for (const l of LAPS) if (l.track && !recent.has(l.track)) recent.set(l.track, l.started || l.created || 0);
+  const tracks = [...recent.keys()];
+  sel.innerHTML = tracks.map((t) => `<option>${esc(t)}</option>`).join("") || "<option value=''>no laps yet</option>";
+  if (cur && tracks.includes(cur)) sel.value = cur;
+  else if (STATE.track && tracks.includes(STATE.track)) sel.value = STATE.track;
+}
+for (const id of ["lb-track", "lb-mode", "lb-who", "lb-show", "lb-valid"]) $(id).onchange = () => drawBoard();
+function drawBoard() {
+  const track = $("lb-track").value, mode = $("lb-mode").value, who = $("lb-who").value, show = $("lb-show").value, valid = $("lb-valid").checked;
+  let laps = LAPS.filter((l) => l.lap_time > 0 && l.track === track && (mode === "all" || MODE(l.type) === mode)
+    && (who === "all" || (who === "me") === !!l.me) && (!valid || l.valid)).sort((a, b) => a.lap_time - b.lap_time);
+  if (show === "best") { const seen = new Set(); laps = laps.filter((l) => !seen.has(driverKey(l)) && seen.add(driverKey(l))); }
+  const shown = laps.slice(0, 300), best = shown[0];
+  const s3 = shown.map(sec3), bestS = [0, 1, 2].map((k) => Math.min(...s3.filter(Boolean).map((v) => v[k])));
+  $("lb-note").textContent = laps.length ? `${laps.length} ${show === "best" ? "drivers" : "laps"} · fastest ${fmt(best.lap_time)}${laps.length > 300 ? " · showing the first 300" : ""} · click a lap to analyse it` : "";
+  $("lapboard").innerHTML = !shown.length ? '<tbody><tr><td class="muted">No laps match these filters.</td></tr></tbody>' :
+    `<thead><tr><th>#</th><th style="text-align:left">Driver</th><th>Lap time</th><th>Gap</th><th>S1</th><th>S2</th><th>S3</th><th>Tyre</th><th style="text-align:left">Session</th><th>Lap</th><th>Valid</th></tr></thead><tbody>` +
+    shown.map((l, i) => `<tr class="${l.me ? "me" : ""}" data-id="${l.id}"><td class="muted">${i + 1}</td><td class="nm">${driverCell(l)}</td>
+      <td class="${i === 0 ? "p" : ""}">${fmt(l.lap_time)}</td><td class="muted">${i ? sgn(l.lap_time - best.lap_time) : "-"}</td>
+      ${[0, 1, 2].map((k) => `<td class="${s3[i] && Math.abs(s3[i][k] - bestS[k]) < 5e-4 ? "p" : ""}">${s3[i] ? s3[i][k].toFixed(3) : "-"}</td>`).join("")}
+      <td>${tyreBadge(l.compound, l.tyre_age)}</td><td class="muted" style="text-align:left;font:400 12.5px var(--font)">${esc(MODE_NAME[MODE(l.type)])} · ${esc(sessDate(l.started || l.created))}</td>
+      <td class="muted">${l.lap}</td><td class="${l.valid ? "" : "slower"}">${l.valid ? "yes" : "no"}</td></tr>`).join("") + "</tbody>";
+  document.querySelectorAll("#lapboard tbody tr[data-id]").forEach((tr) => tr.onclick = () => openLap(+tr.dataset.id));
+}
+
+let GROUP = "driver";
+document.querySelectorAll("#sb-group button").forEach((b) => b.onclick = () => {
+  GROUP = b.dataset.g; document.querySelectorAll("#sb-group button").forEach((x) => x.classList.toggle("on", x === b)); drawSessBoard();
+});
+for (const id of ["sb-bucket", "sb-from", "sb-to", "sb-lap"]) $(id).onchange = (e) => { if (e.target.id === "sb-bucket") fillSessFilters(curSession(), false); drawSessBoard(); };
+const curSession = () => SESSIONS.find((x) => x.id === $("timing-session").value) || SESSIONS[0];
+const sessLaps = (s) => s.laps.filter((l) => l.lap_time > 0);
+function fillSessFilters(s, keepLap) {
+  if (!s) return;
+  const laps = sessLaps(s), maxLap = Math.max(0, ...laps.map((l) => l.lap)), curLap = $("sb-lap").value;
+  $("sb-lap").innerHTML = `<option value="all">All laps</option>` + Array.from({ length: maxLap }, (_, i) => `<option value="${i + 1}">Lap ${i + 1}</option>`).join("");
+  if (keepLap && curLap) $("sb-lap").value = curLap;
+  const B = +$("sb-bucket").value * 60, t0 = Math.min(...laps.map((l) => l.created || 0)), t1 = Math.max(...laps.map((l) => l.created || 0));
+  const n = laps.length ? Math.floor((t1 - t0) / B) + 1 : 0;
+  const opts = Array.from({ length: n }, (_, i) => `<option value="${i}">${i * B / 60} min</option>`).join("");
+  const pf = $("sb-from").value, pt = $("sb-to").value, wasLast = $("sb-to").selectedIndex === $("sb-to").options.length - 1;
+  $("sb-from").innerHTML = opts; $("sb-to").innerHTML = opts.replace(/>(\d+) min</g, (m, v) => `>${+v + B / 60} min<`);
+  $("sb-from").value = keepLap && pf && +pf < n ? pf : "0";
+  $("sb-to").value = keepLap && pt && +pt < n && !wasLast ? pt : String(Math.max(0, n - 1));   // following the end: keep following
+}
+function rankTable(laps, cols) {   // laps of one group, fastest first
+  laps = laps.slice().sort((a, b) => a.lap_time - b.lap_time);
+  const best = laps.find((l) => l.valid) || laps[0];
+  return `<table class="grid-table sboard"><thead><tr><th>#</th><th style="text-align:left">Driver</th>${cols.lap ? "<th>Lap</th>" : ""}<th>Lap time</th><th>Gap</th><th>S1</th><th>S2</th><th>S3</th><th>Tyre</th></tr></thead><tbody>` +
+    laps.map((l, i) => { const s = sec3(l);
+      return `<tr class="${l.me ? "me" : ""}"><td class="muted">${i + 1}</td><td class="nm">${driverCell(l)}</td>${cols.lap ? `<td class="muted">${l.lap}</td>` : ""}
+        <td class="lt ${l.valid ? (l === best ? "p" : "") : "inv"}" data-id="${l.id}">${fmt(l.lap_time)}</td><td class="muted">${l === best || !best ? "-" : sgn(l.lap_time - best.lap_time)}</td>
+        ${[0, 1, 2].map((k) => `<td>${s ? s[k].toFixed(3) : "-"}</td>`).join("")}<td>${tyreBadge(l.compound, l.tyre_age)}</td></tr>`; }).join("") + "</tbody></table>";
+}
+function drawSessBoard() {
+  const s = curSession(); if (!s) return;
+  const laps = sessLaps(s);
+  $("sb-time-f").classList.toggle("hidden", GROUP !== "time"); $("sb-lap-f").classList.toggle("hidden", GROUP !== "lap");
+  const fastest = laps.filter((l) => l.valid).reduce((b, l) => !b || l.lap_time < b.lap_time ? l : b, null);
+  const drivers = new Set(laps.map(driverKey));
+  $("sb-note").textContent = `${laps.length} laps · ${drivers.size} drivers` + (fastest ? ` · fastest ${fmt(fastest.lap_time)} (${fastest.me ? "you" : surname(fastest.car)})` : "") + " · strikethrough = deleted lap";
+  let html = "";
+  if (!laps.length) html = '<p class="muted">No laps stored for this session.</p>';
+  else if (GROUP === "driver") {   // one row per driver: every lap in order, best and average
+    const by = new Map(); for (const l of laps) { const k = driverKey(l); if (!by.has(k)) by.set(k, []); by.get(k).push(l); }
+    const maxLap = Math.max(...laps.map((l) => l.lap));
+    const rows = [...by.values()].map((ls) => { const v = ls.filter((l) => l.valid); return { ls, best: v.reduce((b, l) => Math.min(b, l.lap_time), 1e9),
+      avg: v.length ? v.reduce((a, l) => a + l.lap_time, 0) / v.length : null }; }).sort((a, b) => a.best - b.best);
+    html = `<table class="grid-table sboard"><thead><tr><th>#</th><th style="text-align:left">Driver</th><th>Best</th><th>Gap</th><th>Average</th><th>Laps</th>${Array.from({ length: maxLap }, (_, i) => `<th>L${i + 1}</th>`).join("")}</tr></thead><tbody>` +
+      rows.map((r, i) => { const l0 = r.ls[0], cells = new Map(r.ls.map((l) => [l.lap, l]));
+        return `<tr class="${l0.me ? "me" : ""}"><td class="muted">${i + 1}</td><td class="nm">${driverCell(l0)}</td>
+          <td class="${r.best === (fastest && fastest.lap_time) ? "p" : ""}">${r.best < 1e9 ? fmt(r.best) : "-"}</td><td class="muted">${i && r.best < 1e9 ? sgn(r.best - rows[0].best) : "-"}</td>
+          <td class="muted">${r.avg ? fmt(r.avg) : "-"}</td><td class="muted">${r.ls.length}</td>` +
+          Array.from({ length: maxLap }, (_, k) => { const l = cells.get(k + 1); if (!l) return "<td class='muted'>-</td>";
+            const c = !l.valid ? "inv" : l === fastest ? "p" : l.lap_time === r.best ? "g" : "";
+            return `<td class="lt ${c}" data-id="${l.id}">${fmt(l.lap_time)}</td>`; }).join("") + "</tr>"; }).join("") + "</tbody></table>";
+  } else if (GROUP === "lap") {    // every driver on lap x, ranked
+    const pick = $("sb-lap").value, nums = [...new Set(laps.map((l) => l.lap))].sort((a, b) => a - b).filter((n) => pick === "all" || n === +pick);
+    html = nums.map((n) => `<div class="group-h">Lap ${n}</div>` + rankTable(laps.filter((l) => l.lap === n), {})).join("");
+  } else {                         // laps finished in each time window of the session
+    const B = +$("sb-bucket").value * 60, t0 = Math.min(...laps.map((l) => l.created || 0)), from = +$("sb-from").value, to = +$("sb-to").value;
+    const groups = new Map();
+    for (const l of laps) { const k = Math.floor(((l.created || 0) - t0) / B); if (k >= from && k <= to) { if (!groups.has(k)) groups.set(k, []); groups.get(k).push(l); } }
+    html = [...groups.keys()].sort((a, b) => a - b).map((k) => `<div class="group-h">${k * B / 60}–${(k + 1) * B / 60} min · ${groups.get(k).length} laps</div>` + rankTable(groups.get(k), { lap: true })).join("")
+      || '<p class="muted">No laps in this time range.</p>';
+  }
+  $("sessboard").innerHTML = html;
+  document.querySelectorAll("#sessboard td.lt[data-id]").forEach((td) => td.onclick = () => openLap(+td.dataset.id));
+}
+
 // ---------------------------------------------------------------- boot
 fetch("/api/radio").then((r) => r.json()).then((rows) => rows.forEach(addRadio)).catch(() => {});
 connect();
@@ -730,7 +841,7 @@ connect();
   const ids = (q.get("laps") || "").split(",").filter(Boolean).map(Number);
   if (ids.length) { for (const id of ids) await toggleLap(id); }
   else if (LAPS.length) {
-    const s = SESSIONS[0], p = s.laps.filter((l) => l.car === "Player" && l.lap_time > 0).sort((a, b) => a.lap_time - b.lap_time);
+    const s = SESSIONS[0], p = s.laps.filter((l) => l.me && l.lap_time > 0).sort((a, b) => a.lap_time - b.lap_time);
     if (p[0]) await toggleLap(p[0].id);
     if (p[1]) await toggleLap(p[1].id);
   }

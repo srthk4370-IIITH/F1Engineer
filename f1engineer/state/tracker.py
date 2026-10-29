@@ -70,6 +70,7 @@ class CarTracker:
         self.last_cur_time = 0.0
         self.last_dist = 0.0
         self.completed: list[Lap] = []
+        self.lap_start_last = -1.0   # the game's "last lap time" when this lap began (a new value = the lap ended)
         self.invalid_now = False
 
 
@@ -281,8 +282,15 @@ class SessionTracker:
             dist = float(L["lapDistance"])
             if lap_num == 0 or (i != self.player_idx and int(L["resultStatus"]) < 2 and dist == 0 and cur_t == 0):
                 continue
+            if int(L["resultStatus"]) == 3:   # chequered flag: the final lap never gets a new lap number, close it here
+                if c.lap is not None and float(L["lastLapTime"]) > 0 and float(L["lastLapTime"]) != c.lap_start_last:
+                    self._complete_lap(c, L)
+                    c.lap = None
+                if c.lap is None:
+                    continue
             if c.lap is None:
                 c.lap = self._new_lap(i, lap_num)
+                c.lap_start_last = float(L["lastLapTime"])
             elif lap_num != c.last_lap_num:
                 if lap_num > c.last_lap_num:
                     self._complete_lap(c, L)
@@ -290,6 +298,7 @@ class SessionTracker:
                     self._abort(c, "lap number went backwards")
                 c._s1 = c._s2 = 0
                 c.lap = self._new_lap(i, lap_num)
+                c.lap_start_last = float(L["lastLapTime"])
             elif cur_t + 0.5 < c.last_cur_time:
                 # Time went backwards within a lap: flashback (partial rewind) or a restart (back to ~0).
                 if cur_t < 1.0 or dist < 50:
