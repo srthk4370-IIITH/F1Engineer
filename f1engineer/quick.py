@@ -34,6 +34,11 @@ COMMANDS = [  # radio commands: always instant, never the AI
 ]
 EXPLAIN = _w(r"^(explain( that| this| it)?|what do you mean|why( is that| that)?|how do i do that|meaning)\??$")
 
+RIVAL = _w(r"(losing|lose|lost|gaining|gain|faster|quicker|slower|time)\b.{0,25}\b(to|than|against|vs|versus|on|compared to)\b"
+           r"|compare me|me (vs|versus|against)|how do i compare")
+LOSING = _w(r"losing time|where am i (slow|losing)|where'?s the time")
+RACE_UPDATE = _w(r"race update|how'?s the race|race status|update me|sitrep|status update|what'?s happening|give me an update")
+
 INTENTS = [  # (name, pattern) - first match wins
     ("radio_check", _w(r"radio check|how do you read|do you (read|copy|hear) me|can you hear")),
     ("brakes", _w(r"brake temp|brakes? (hot|temp)")),
@@ -85,8 +90,14 @@ def classify(question: str) -> str | None:
     cmd = next((name for name, rx in COMMANDS if rx.search(q)), None)
     if cmd:
         return cmd
+    if RIVAL.search(q):
+        return "rival"          # data answer in a race; elsewhere answer() hands it to the AI
+    if RACE_UPDATE.search(q):
+        return "race_update"
     if REASONING.search(q):
         return None
+    if LOSING.search(q):
+        return "losing"
     return next((name for name, rx in INTENTS if rx.search(q)), None)
 
 
@@ -127,9 +138,66 @@ def answer(eng, question: str) -> str | None:
         eng.plan = None
         return "Plan stopped."
     try:
+        if intent in ("rival", "losing"):
+            return rival_answer(eng, question)
+        if intent == "race_update":
+            return race_update(eng)
         return _answer(eng, intent)
     except Exception:
         return None   # missing data: let the AI handle it gracefully
+
+
+def rival_answer(eng, question: str) -> str | None:
+    """'Where am I losing time to Verstappen?' - corner by corner from live data (races; no name = the car ahead)."""
+    from f1engineer.analysis import rival
+    tr = eng.tr
+    if not tr.is_race or tr.lapdata is None:
+        return None            # practice/TT: the lap report (AI) answers this
+    other = rival.find_car(eng, question)
+    if other is None:
+        return None
+    return rival.radio_text(rival.compare(eng, other))
+
+
+def race_update(eng) -> str | None:
+    """Position, the cars around you with trends, tyres, fuel, laps left - in one breath."""
+    tr = eng.tr
+    if tr.lapdata is None:
+        return None
+    snap = eng.race_now()
+    L = tr.lapdata[tr.player_idx]
+    total = int(tr.session.get("totalLaps") or 0)
+    lap = int(L["currentLapNum"])
+    out = [f"P{snap.get('position')}" + (f", lap {lap} of {total}." if tr.is_race and total else ".")]
+    a, b = snap.get("ahead") or {}, snap.get("behind") or {}
+    if a.get("gap_s") is not None:
+        out.append(f"{radio_name(a)} {a['gap_s']:.1f} ahead.{_trend(eng, 'ahead', a.get('name'), a['gap_s'])}")
+    if b.get("gap_s") is not None:
+        out.append(f"{radio_name(b)} {b['gap_s']:.1f} behind.{_trend(eng, 'behind', b.get('name'), b['gap_s'])}")
+    ty = snap.get("tyres") or {}
+    if ty.get("compound"):
+        w = max(ty.get("wear_pct") or [0])
+        out.append(f"{str(ty['compound']).capitalize()}s, {ty.get('age_laps')} laps, {w:.0f} percent worn.")
+    f = (snap.get("fuel") or {}).get("remaining_laps_delta")
+    if f is not None and f < 0.2:
+        out.append(f"Fuel {f:+.1f}, lift and coast a bit.")
+    for c in (snap.get("calls") or [])[:1]:
+        out.append(c if c.endswith(".") else c + ".")
+    return " ".join(out)
+
+
+def offline_answer(eng, question: str) -> str | None:
+    """The AI is unreachable: the best data answer we can give instead of a shrug."""
+    q = question.lower()
+    if eng.tr.lapdata is None:
+        return None
+    if eng.tr.is_race:
+        if RIVAL.search(q) or LOSING.search(q) or "losing" in q or "faster" in q:
+            r = rival_answer(eng, question)
+            if r:
+                return r
+        return race_update(eng)
+    return None
 
 
 TOPICS = [(_w(r"setup|wing|diff|camber|toe|suspension|anti.?roll|brake bias|pressure"), "the setup"),
@@ -171,7 +239,7 @@ def _answer(eng, intent: str) -> str | None:
     T = tr.telemetry[me] if tr.telemetry is not None else None
     L = tr.lapdata[me] if tr.lapdata is not None else None
     st = tr.status[me] if tr.status and tr.status[me] else {}
-    snap = eng.race or {}
+    snap = eng.race_now() if tr.lapdata is not None else (eng.race or {})
     if intent == "radio_check":
         return _say("Loud and clear.", "Loud and clear, mate.", "Reading you fine.", "Five by five.")
     if intent == "temps" and T is not None:

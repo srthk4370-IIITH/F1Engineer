@@ -24,7 +24,8 @@ import numpy as np
 STT_PROMPT = ("F1 race engineer radio, driver talking to the engineer. Hey Bono. What setup changes should I make? "
               "What's my driving style? Am I improving? Tyre temps, tyre wear, gap ahead, gap behind, laps left, coasting, "
               "steering, braking, throttle, corners, traction, understeer, oversteer. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
-              "Luffield, the Loop. Box box, undercut, overcut, DRS, ERS, softs, mediums, hards, inters, brake bias, "
+              "Luffield, the Loop. Verstappen, Hamilton, Bottas, Leclerc, Norris, Sainz, Perez, Ricciardo, Russell, Gasly, "
+              "Ocon, Alonso, Vettel, Albon, Stroll, Piastri. Where am I losing time to Verstappen? Race update. Box box, undercut, overcut, DRS, ERS, softs, mediums, hards, inters, brake bias, "
               "front wing, rear wing, differential, understeer, oversteer, lock-up, tyre wear, delta, sector, lap time.")
 
 

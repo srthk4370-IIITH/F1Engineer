@@ -493,3 +493,25 @@ def test_voice_gate_ends_in_a_noisy_room():
         if seg is not None:
             break
     assert seg is not None and i <= 7
+
+
+def test_rival_questions_route_to_data_answers():
+    """'Where am I losing time to Verstappen' is a data answer (works with the AI offline), incl. speech slips."""
+    from types import SimpleNamespace as NS
+
+    from f1engineer import quick
+    from f1engineer.analysis import rival
+    assert quick.classify("Where am I losing time to Verstappen?") == "rival"
+    assert quick.classify("Race update") == "race_update"
+    assert quick.classify("where am I losing time") == "losing"
+    lapdata = [{"carPosition": p} for p in (2, 1, 3)] + [{"carPosition": 0}] * 19
+    tr = NS(lapdata=lapdata, player_idx=0, participants=[{}] * 3,
+            car_name=lambda i: ["Player", "VERSTAPPEN", "BOTTAS"][i])
+    eng = NS(tr=tr)
+    assert rival.find_car(eng, "where am I losing time towards to happen") == 1
+    assert rival.find_car(eng, "how do I compare to Bottas") == 2
+    assert rival.find_car(eng, "where am I losing time") == 1          # no name: the car ahead
+    c = {"loss_s": 0.3, "min_kmh": [100, 112], "top_kmh": [300, 300], "exit_kmh": [150, 151],
+         "brake_m": [800.0, 812.0], "full_throttle_m": [None, None]}
+    w = rival.why(c, "VERSTAPPEN")
+    assert "Verstappen brakes 12 m later" in w and "12 km/h more" in w

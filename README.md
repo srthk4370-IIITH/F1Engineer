@@ -205,6 +205,13 @@ words. Things to try:
 - "Twenty lap race, start on softs, pit lap 9 for mediums: will that work?"
 - "Remember that my goal is a 1:27 at Silverstone."
 - "Should I change my brake bias?" / "Explain trail braking."
+- In a race: "Where am I losing time to Verstappen?" / "How do I compare to the leader?" / "Race update"
+
+**Racing other drivers.** Every car's speed, braking and throttle are recorded, so he compares you with any driver
+corner by corner, from the first few hundred metres of lap 1 ("0.6 down to Verstappen this lap so far. Luffield, 0.12:
+he carries 9 km/h more through the apex"). No name means the car ahead. After each sector he calls what changed
+against the car ahead (and a close car behind): "Lost 0.3 to Bottas that sector. Mostly at Village: Bottas brakes 9 m
+later." These are data answers: instant, and they still work if the internet or the AI drops out.
 
 ---
 

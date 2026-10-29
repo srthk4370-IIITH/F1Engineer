@@ -80,6 +80,10 @@ TOOL_SCHEMAS = [
      {"query": {"type": "string"}}),
     ("get_car_status", "Live car: tyre surface/inner temps, pressures and wear per corner, compound and age, brake and "
      "engine temps, fuel margin, ERS, damage.", {}),
+    ("compare_with_driver", "Me vs another driver corner by corner, from live telemetry of both cars: this lap so far "
+     "and the last full lap - time lost/gained per corner and why (braking point, apex speed, throttle, top speed). Use "
+     "for 'where am I losing time to X', 'how do I compare to the leader'. No name = the car ahead.",
+     {"driver": {"type": "string", "description": "surname, or 'ahead' / 'behind' / 'leader'"}}),
     ("get_rivals", "Who I'm racing: cars around my position with gaps, last/best laps, tyre compound and age, pit status.",
      {"around": {"type": "integer", "description": "positions either side (default 3)"}}),
     ("get_progress", "Long-term progress on a track across all sessions: best and representative pace per session, "
@@ -330,6 +334,7 @@ class Agent:
         self.name = os.getenv("F1E_ENGINEER_NAME") or os.getenv("F1E_WAKE_NAME") or "Bono"
         self.provider = provider or make_provider()
         self.history: list[dict] = []
+        self.offline_fn: Callable[[str], str | None] | None = None   # data answer when the AI can't be reached
 
     def ask(self, question: str, max_rounds: int = 4, mode: str = "radio", remember: bool = True,
             history: list | None = None) -> Iterator[str]:
@@ -341,6 +346,7 @@ class Agent:
         msgs = [sys, *(self.history if history is None else history)[-12:], {"role": "user", "content": question}]
         tools = openai_tools(set(self.tools))
         answer = ""
+        calls_made = False
         for _ in range(max_rounds):
             calls = []
 
@@ -353,7 +359,11 @@ class Agent:
                     print(f"[llm] {type(self.provider).__name__} failed: {str(e)[:300]}")
                     if isinstance(self.provider, MockProvider):
                         raise
-                    events = iter(MockProvider().stream(msgs, tools))  # this answer comes from the offline brain
+                    alt = self.offline_fn(question) if self.offline_fn and not calls_made else None
+                    if alt:      # no AI: the live data answer beats the offline brain's templates
+                        events = iter([{"type": "text", "text": alt}])
+                    else:
+                        events = iter(MockProvider().stream(msgs, tools))  # this answer comes from the offline brain
                     first = next(events, None)
                 for ev in _chain(first, events):
                     if ev["type"] == "text":
@@ -368,6 +378,7 @@ class Agent:
                 yield s
             if not calls:
                 break
+            calls_made = True
             msgs.append({"role": "assistant", "content": None, "tool_calls": [
                 {"id": c["id"], "type": "function", "function": {"name": c["name"], "arguments": c["args"] or "{}"}}
                 for c in calls]})

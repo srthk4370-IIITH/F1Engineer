@@ -84,6 +84,7 @@ class Engine:
         self._recent_radio: deque[str] = deque(maxlen=20)
         self._last_strategist = 0.0
         self.pipeline = AskPipeline(self)
+        self.agent.offline_fn = self._offline_answer
         self._greet_at = 0.0
         radio.WORDS_PER_SEC = 2.7 * self.cfg.tts_speed   # message length vs the straight
         self.adapt: dict = {}     # adapt.profile(): game, OS, input, assists, skill tier
@@ -95,7 +96,8 @@ class Engine:
         tr.on("lap_aborted", lambda lap, why: self._emit({"type": "lap_aborted", "lap": lap.lap_num, "reason": why}))
         tr.on("sc_change", self._on_sc)
         tr.on("flashback", lambda t: self.sched.clear())
-        tr.on("sector", lambda car, sector: self.coach.on_sector(sector))
+        tr.on("sector", lambda car, sector: (self.coach.on_sector(sector), self._bg_put(self._sector_rival, sector)))
+        self._sector_seen: dict[tuple, float] = {}
 
     # ---- ingest ------------------------------------------------------------------
     def feed(self, data: bytes, wall: float | None = None) -> None:
@@ -197,6 +199,7 @@ class Engine:
         self.race_eng = RaceEngineer(self)
         self.patterns = Patterns(self)
         self._unanalysed = None   # (the conversation itself carries on across sessions, like a real engineer)
+        self._sector_seen = {}
         self._first_review = None
         self._bg_put(self.store.start_session, tr.session_uid, tr.track, tr.session_type, tr.packet_format)
         # stored personal best becomes the initial reference
@@ -564,9 +567,59 @@ class Engine:
         self.coach.tick()
         if self.tr.is_race:
             self.race_eng.tick()
-            if n % 20 == 0:
-                self.race = strategy.race_snapshot(self.tr, self.gaps, self.tyres)
-                self.race_eng.battles(self.race)
+            if n % 10 == 0:
+                self.race_eng.battles(self.race_now())
+
+    def race_now(self) -> dict:
+        """Race snapshot from the latest packets (at most 0.3 s old), not from the last lap line."""
+        if self.tr.lapdata is not None and time.time() - getattr(self, "_race_t", 0) > 0.3:
+            self.race = strategy.race_snapshot(self.tr, self.gaps, self.tyres)
+            self._race_t = time.time()
+        return self.race
+
+    def _sector_rival(self, sector: int) -> None:
+        """Race: after each sector, what changed against the car ahead (and a close car behind), and where."""
+        from f1engineer.analysis import rival
+        tr = self.tr
+        if not tr.is_race or tr.lapdata is None or time.time() < self.quiet_until:
+            return
+        snap = self.race_now()
+        pos = snap.get("position") or 0
+        a, b = snap.get("ahead") or {}, snap.get("behind") or {}
+        by_pos = {int(tr.lapdata[i]["carPosition"]): i for i in range(22)}
+        targets = []
+        if a.get("gap_s") is not None and a["gap_s"] < 4:
+            targets.append(("ahead", by_pos.get(pos - 1)))
+        if b.get("gap_s") is not None and b["gap_s"] < 1.5:
+            targets.append(("behind", by_pos.get(pos + 1)))
+        for side, idx in targets:
+            if idx is None:
+                continue
+            if sector == 0:                     # new lap: start counting again
+                continue
+            r = rival.compare(self, idx)
+            part = r.get("this_lap")
+            if not part:
+                continue
+            key = (idx, part["lap"])
+            # baseline: 0 at the start of the lap; a car that only just became the one ahead gets one first
+            prev = self._sector_seen.get(key, 0.0 if sector == 1 else None)
+            self._sector_seen[key] = part["total_loss_s"]
+            if prev is None:
+                continue
+            d = part["total_loss_s"] - prev     # what changed in this sector
+            if abs(d) < 0.15:
+                continue
+            them = r["driver"]
+            worst = (part["losses"] if d > 0 else part["gains"])[:1]
+            where = (f" Mostly at {worst[0]['corner']}" + (f": {worst[0]['why']}" if worst[0]["why"] else "") + ".") if worst else ""
+            if d > 0:
+                text = (f"Lost {d:.1f} to {them} that sector." if side == "ahead"
+                        else f"{them}'s taken {d:.1f} out of you that sector.") + where
+            else:
+                text = (f"Took {abs(d):.1f} out of {them} that sector." if side == "ahead"
+                        else f"Pulled {abs(d):.1f} on {them} that sector.")
+            self.sched.push([radio.Message(4, radio.CLOCK(), text, "straight", 25, f"rival{idx}", evidence=abs(d))])
 
     # ---- background work -----------------------------------------------------------
     def _bg_put(self, fn, *args) -> None:
@@ -596,6 +649,21 @@ class Engine:
             fn(*args)
 
     # ---- LLM tools ------------------------------------------------------------------
+    def _offline_answer(self, question: str) -> str | None:
+        from f1engineer import quick
+        a = quick.offline_answer(self, question)
+        if a and time.time() - getattr(self, "_ai_down_said", 0) > 120:
+            self._ai_down_said = time.time()
+            a = "Lost the link to the AI, data only for now. " + a
+        return a
+
+    def _compare_driver(self, driver: str) -> dict:
+        from f1engineer.analysis import rival
+        if self.tr.lapdata is None:
+            return {"error": self._no_telemetry_note()}
+        idx = rival.find_car(self, driver or "ahead")
+        return rival.compare(self, idx) if idx is not None else {"error": f"no car matching '{driver}'"}
+
     def _no_telemetry_note(self) -> str:
         """No session packet yet: say why, and what we do know (the last track driven)."""
         try:
@@ -786,7 +854,8 @@ class Engine:
             "head_to_head": lambda: brain.head_to_head(self.store, self.tr.track, str(self.tr.session_uid)),
             "start_practice_plan": lambda goal, steps: self.start_plan(goal, steps),
             "get_plan_status": lambda: self.plan.to_dict() if self.plan else {"error": "no plan running"},
-            "get_race_status": lambda: self.race or strategy.race_snapshot(self.tr, self.gaps, self.tyres),
+            "get_race_status": lambda: self.race_now() or {"error": self._no_telemetry_note()},
+            "compare_with_driver": lambda driver="": self._compare_driver(driver),
             "get_consistency": lambda: {"corners": coach.consistency(self.reports[-6:])},
             "search_knowledge": lambda query="": {"results": knowledge.search(query)},
             "get_car_status": self._car_status,
