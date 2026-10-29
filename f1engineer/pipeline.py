@@ -14,7 +14,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-from f1engineer import quick
+from f1engineer import quick, radio
 
 import re
 
@@ -140,7 +140,7 @@ class AskPipeline:
                                 self.open.remove(q)
                         self.speaking = True
                         if q.interleaved or q.after_other or time.time() - q.asked > 12:
-                            s = quick.lead_in(q.text) + s[:1].lower() + s[1:]   # "On the setup: ..."
+                            s = quick.lead_in(q.text) + radio.follow_on(s) if quick.lead_in(q.text) else s   # "On the setup: ..."
                         print(f"[ask] '{q.text}' -> first sentence in {time.time() - q.asked:.2f}s "
                               f"({q.source if q.source == 'instant' else type(self.eng.agent.provider).__name__}, {q.mode})")
                     out.append(s)

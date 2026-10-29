@@ -44,6 +44,17 @@ class Message:
         return now - self.created > self.ttl
 
 
+COMMON_STARTS = {"You", "You're", "Your", "The", "That", "This", "It", "It's", "Gap", "Box", "Stay", "Keep", "Push",
+                 "Gaining", "Pulling", "Still", "Good", "Nice", "No", "One", "Two", "Three", "Brake", "Lift", "Get",
+                 "Yes", "Second", "First", "Third", "We", "We're", "Fronts", "Rears", "Tyres", "Fuel", "Front", "Rain"}
+
+
+def follow_on(text: str) -> str:
+    """'Albon 0.3 behind' stays 'Albon...' after 'Meanwhile, '; 'The Loop...' becomes 'the Loop...'."""
+    first = text.split(" ", 1)[0].rstrip(",.:")
+    return text[:1].lower() + text[1:] if first in COMMON_STARTS else text
+
+
 def fmt_t(s: float) -> str:
     m, sec = divmod(s, 60)
     return f"{int(m)}:{sec:06.3f}" if m else f"{sec:.3f}"

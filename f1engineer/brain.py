@@ -185,6 +185,9 @@ COMPOUND_WEAR = {"soft": 1.0, "medium": 0.7, "hard": 0.5, "intermediate": 0.8, "
 CLIFF = 70.0
 
 
+MIN_LAPS_TWO_COMPOUNDS = 10   # shorter (5-lap, 3-lap) races: no compulsory stop assumed
+
+
 def evaluate_strategy(plan: list[dict] | None, total_laps: int, current_lap: int = 1, start_compound: str = "soft",
                       tyre_age: int = 0, wear_rate_soft: float | None = None, base_lap: float = 90.0,
                       pit_loss: float = 21.0) -> dict:
@@ -217,7 +220,7 @@ def evaluate_strategy(plan: list[dict] | None, total_laps: int, current_lap: int
         if w > CLIFF:
             warn.append(f"final {comp} stint ends at {w:.0f}% wear (past the cliff)")
         dry = {c for c in used if c in ("soft", "medium", "hard")}
-        if len(dry) < 2 and used <= {"soft", "medium", "hard"} and total_laps >= 5:
+        if len(dry) < 2 and used <= {"soft", "medium", "hard"} and total_laps >= MIN_LAPS_TWO_COMPOUNDS:
             warn.append("only one dry compound used: illegal in a dry race (must use two)")
         return {"stops": stops, "race_time_s": round(t, 1), "laps_simulated": laps_left, "warnings": warn}
 
@@ -225,7 +228,7 @@ def evaluate_strategy(plan: list[dict] | None, total_laps: int, current_lap: int
                            "compound_pace_s_per_lap_vs_soft": COMPOUND_PACE, "cliff_wear_pct": CLIFF}}
     if plan:
         out["your_plan"] = simulate(plan)
-    cands = []
+    cands = [simulate([])]
     rng = range(current_lap + 1, total_laps)
     comps = ["soft", "medium", "hard"]
     for c1 in comps:

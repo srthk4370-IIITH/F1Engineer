@@ -217,11 +217,18 @@ def find_car(eng, text: str) -> int | None:
     return by_pos.get(pos - 1) if pos > 1 else by_pos.get(pos + 1)   # no name: the car ahead (leader: behind)
 
 
+def _cap(s: str) -> str:
+    return s[:1].upper() + s[1:]
+
+
 def radio_text(r: dict) -> str:
-    """Short spoken answer from compare()."""
-    if "error" in r:
-        return f"Not enough data on {r['driver']} yet. Give me half a lap."
+    """Short spoken answer from compare(): the total, the biggest loss and why (a gain only when there's no loss)."""
     them = r["driver"]
+    if "error" in r:
+        g = r.get("gap_s")
+        if g is None:
+            return f"No corner data on {them} yet. Give me half a lap."
+        return f"No corner data on {them} yet, he's {abs(g):.1f} {'ahead' if g > 0 else 'behind'}. Ask me mid-lap."
     part = r.get("last_lap") if (r.get("last_lap") or {}).get("complete") else r.get("this_lap") or r.get("last_lap")
     tot = part["total_loss_s"]
     where = "last lap" if part is r.get("last_lap") else "this lap so far"
@@ -232,11 +239,11 @@ def radio_text(r: dict) -> str:
     else:
         head = f"Dead level with {them} {where}."
     out = [head]
-    losses = part["losses"][:2]
-    for i, c in enumerate(losses):
-        lead = "But you lose " if tot < 0.05 and i == 0 else ""
+    if part["losses"]:
+        c = part["losses"][0]
+        lead = "You lose it at " if tot >= 0.05 else "But you lose "
         out.append(f"{lead}{c['corner']}, {c['loss_s']:.2f}" + (f": {c['why']}." if c["why"] else "."))
-    if part["gains"]:
+    elif part["gains"]:
         g = part["gains"][0]
-        out.append(f"You're quicker at {g['corner']}" + (f", {g['why']}." if g["why"] else "."))
+        out.append(_cap(f"{g['corner']} is yours") + (f", {g['why']}." if g["why"] else "."))
     return " ".join(out)

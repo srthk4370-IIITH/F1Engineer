@@ -527,3 +527,39 @@ def test_gap_calls_say_the_right_direction():
                     "rate_per_lap_s": 0.5}).startswith("Gaining on Bottas")
     assert "defend" in t(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 0.7, "change_s": -0.4})
     assert t(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 1.7, "change_s": 0.4}).startswith("Pulling away from")
+
+
+def test_live_radio_stays_fresh_and_tidy():
+    """Newer call on a topic replaces the queued one; stale live calls aren't resumed; names keep their capitals;
+    short races don't box; a temperature warning isn't repeated unless it gets worse."""
+    from types import SimpleNamespace as NS
+
+    from f1engineer import brain, radio
+    from f1engineer.floor import Floor
+    from f1engineer.race import RaceEngineer
+    f = Floor()
+    f.put("Albon is closing, 0.3 that sector.", key="battle_behind")
+    f.put("Albon 0.6 behind, in DRS.", key="battle_behind")
+    assert [i.text for i in f.items] == ["Albon 0.6 behind, in DRS."]
+    it = f.next()
+    it.created -= 30
+    f.set_driver(True)
+    assert f.items == []                       # a 30 s old live call isn't resumed
+    assert radio.follow_on("Albon 0.3 behind.") == "Albon 0.3 behind."
+    assert radio.follow_on("The Loop, 0.4.") == "the Loop, 0.4."
+    best = brain.evaluate_strategy(None, total_laps=5, current_lap=3)["best_alternatives"][0]
+    assert best["stops"] == []                 # 5-lap race: never "box next lap"
+    long_best = brain.evaluate_strategy(None, total_laps=30, current_lap=3)["best_alternatives"][0]
+    assert long_best["stops"]                  # a full race still uses two compounds
+    said = []
+    eng = NS(sched=NS(push=lambda ms: said.extend(m.text for m in ms)))
+    r = RaceEngineer(eng)
+    t = [0.0]
+    old = radio.CLOCK
+    radio.CLOCK = lambda: t[0]
+    try:
+        for t[0], deg in ((0, 113), (6, 113), (130, 116), (260, 121), (400, 112)):
+            r._temp("fronts_hot", True, deg, f"hot {deg}", f"still {deg}")
+    finally:
+        radio.CLOCK = old
+    assert said == ["hot 113", "still 121"]

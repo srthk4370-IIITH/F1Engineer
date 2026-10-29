@@ -336,6 +336,28 @@ class Engine:
                                  "(look at the lap report, corner history and style)", replace_key="focus")
         return rep
 
+    def race_debrief(self, pos: int, grid: int) -> None:
+        """After the flag: the AI looks over the whole race and the debrief waits until the car is parked."""
+        if isinstance(self.agent.provider, MockProvider):
+            return
+
+        def run():
+            try:
+                a = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=self.agent.provider,
+                          profile_fn=self.profile.summary)
+                text = " ".join(a.ask(
+                    f"(Pit wall, race over.) Finished P{pos} from P{grid}. Debrief the race: pull get_race_history, "
+                    "get_last_lap_report, get_consistency and get_driving_style first. What decided the result, the "
+                    "one or two driving fixes worth the most time next race (corner, how, by how much), and one "
+                    "strategy lesson if there is one. Garage debrief, spoken, no lists.", mode="analysis",
+                    remember=False, max_rounds=4)).strip()
+                print(f"[strategist] race debrief: {text[:160]}")
+                if text:
+                    self.sched.push([radio.Message(6, radio.CLOCK(), text, "garage", 900, "race_debrief")])
+            except Exception as e:
+                print(f"[strategist] race debrief failed: {e!r}")
+        threading.Thread(target=run, name="race-debrief", daemon=True).start()
+
     def _ai_debrief(self, lap_num: int, fallback: radio.Message | None = None) -> None:
         """The model writes the garage debrief (progress, priorities, a drill); the template is the fallback."""
         text = ""
@@ -434,11 +456,11 @@ class Engine:
             if hit:
                 if m.evidence < 0.25:
                     return None          # their call, and this isn't costing enough to argue
-                lower = text[:1].lower() + text[1:]
+                lower = radio.follow_on(text)
                 text = random.choice([f"I know you've got your own way on {hit[0].replace('_', ' ')}, but {lower}",
                                       f"Your call on {hit[0].replace('_', ' ')}, but for the record: {lower}"])
             if self.pipeline.waiting_long():
-                text = "Still on what you asked. Meanwhile, " + text[:1].lower() + text[1:]
+                text = "Still on what you asked. Meanwhile, " + radio.follow_on(text)
                 self.pipeline.note_interleaved()
         return text
 
@@ -646,8 +668,9 @@ class Engine:
         text = self._gap_text(c)
         prio = 3 if (c["side"] == "behind" and c["change_s"] < 0 and c["gap_s"] < 1.5) else 4
         # live: the data line goes out now (an AI rephrase costs 2-5 s, and a late gap is a wrong gap)
-        self.sched.push([radio.Message(prio, radio.CLOCK(), text, "straight", 15, f"gap{c['driver']}",
-                                       evidence=abs(c["change_s"]))])
+        key = f"battle_{c['side']}"
+        self.race_eng.last[key] = radio.CLOCK()      # the plain DRS line for this side waits its cooldown
+        self.sched.push([radio.Message(prio, radio.CLOCK(), text, "straight", 15, key, evidence=abs(c["change_s"]))])
 
     def _gap_text(self, c: dict) -> str:
         """The data version of a gap call (also the fallback when the AI is slow or unreachable)."""
@@ -749,7 +772,7 @@ class Engine:
             if "tyres" in car:
                 t = car["tyres"]
                 s += (f"; tyres {t['compound']} {t['age_laps']} laps old, surface temps C {t['surface_temp_c']}, "
-                      f"inner {t['inner_temp_c']}, wear % {t['wear_pct']}; fuel margin laps {car.get('fuel_margin_laps')}; "
+                      f"inner {t['inner_temp_c']}, wear % {t['wear_pct']}; fuel at the flag {car.get('fuel_margin_laps')} laps spare (negative = short; NOT laps left in the tank); "
                       f"ERS {car.get('ers_pct')}%")
             if tr.lapdata is not None:
                 L = tr.lapdata[tr.player_idx]

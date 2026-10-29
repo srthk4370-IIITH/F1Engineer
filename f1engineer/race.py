@@ -27,6 +27,9 @@ class RaceEngineer:
         self.plan: dict | None = None          # latest strategy simulation
         self.plan_lap = -1
         self.sc_seen = "none"
+        self.temp_said: dict[str, tuple[float, int]] = {}   # key -> (when, degrees) of the last temperature call
+        self.drs_told: set[str] = set()                    # cars we've already given the full DRS advice for
+        self.finished = False
 
     def _due(self, key: str, cooldown: float) -> bool:
         now = radio.CLOCK()
@@ -70,7 +73,15 @@ class RaceEngineer:
             elif sc == "none":
                 self._call("Safety car in this lap. Get ready, tyres need heat.", "sc_end", 30, urgent=True)
 
-        if in_pit or lap < 1:
+        if int(L["resultStatus"]) == 3 and not self.finished:      # chequered flag
+            self.finished = True
+            pos, grid = int(L["carPosition"]), int(L["gridPosition"])
+            moved = (f", up {grid - pos} from the grid" if grid > pos else f", down {pos - grid} from the grid"
+                     if 0 < grid < pos else "")
+            self._call(("Chequered flag, P1, you've won it!" if pos == 1 else f"Chequered flag, P{pos}{moved}.")
+                       + " Bring it home, debrief when you're parked.", "flag", 600, ttl=30)
+            self.eng.race_debrief(pos, grid)
+        if self.finished or in_pit or lap < 1:
             return
         rate = self.eng.tyres.laps_left()
         # tyres finished
@@ -82,10 +93,12 @@ class RaceEngineer:
         # temperatures (sustained, not a single kerb strike)
         surf = [int(x) for x in T["tyresSurfaceTemperature"]]
         fronts, rears = max(surf[2], surf[3]), max(surf[0], surf[1])
-        self._sustained("rears_hot", rears > HOT_SURFACE and float(T["throttle"]) > 0.5,
-                        f"Rears are hot, {rears} degrees. Easy on the exits, short shift.", 5)
-        self._sustained("fronts_hot", fronts > HOT_SURFACE,
-                        f"Fronts overheating, {fronts}. Less sliding into the corners.", 5)
+        self._temp("rears_hot", rears > HOT_SURFACE and float(T["throttle"]) > 0.5, rears,
+                   f"Rears are hot, {rears} degrees. Easy on the exits, short shift.",
+                   f"Rears still hot, {rears}. Smoother on the throttle out of the slow corners.")
+        self._temp("fronts_hot", fronts > HOT_SURFACE, fronts,
+                   f"Fronts overheating, {fronts}. Less sliding into the corners.",
+                   f"Fronts still at {fronts}. Brake a touch earlier and wait for the car to turn before more lock.")
         if lap >= 2 and sc == "none" and comp in SLICKS:
             self._sustained("tyres_cold", max(surf) < COLD_SURFACE,
                             f"Tyres are cold, {max(surf)} degrees. Push a bit to get heat in them.", 8)
@@ -117,8 +130,12 @@ class RaceEngineer:
             self._call(f"{surname(a.get('name'))} {a['gap_s']:.1f} ahead, you're in DRS. Overtake button on the straight.",
                        "battle_ahead", 90)
         if b.get("gap_s") is not None and 0.1 <= b["gap_s"] < 1.0:
-            self._call(f"{surname(b.get('name'))} {b['gap_s']:.1f} behind, in DRS. Cover the inside into the braking zones.",
-                       "battle_behind", 90)
+            who = surname(b.get("name"))
+            if self._due("battle_behind", 90):
+                tip = " Cover the inside into the braking zones." if who not in self.drs_told else ""
+                self.drs_told.add(who)
+                self.eng.sched.push([radio.Message(2, radio.CLOCK(), f"{who} {b['gap_s']:.1f} behind, in DRS.{tip}",
+                                                   "straight", 25, "battle_behind")])
         f = (snap.get("fuel") or {}).get("remaining_laps_delta")
         if f is not None and f < -0.3:
             self._call(f"Fuel's {abs(f):.1f} laps short. Lift and coast, lean mix on the straights.", "fuel", 300)
@@ -136,6 +153,21 @@ class RaceEngineer:
         start = self.hot_since.setdefault(key, now)
         if now - start >= seconds:
             self._call(text, key, 120)
+
+    def _temp(self, key: str, cond: bool, deg: int, first: str, again: str) -> None:
+        """Temperatures: say it once; again only if it got 5 degrees worse or after 10 minutes, with a different fix."""
+        now = radio.CLOCK()
+        if not cond:
+            self.hot_since.pop(key, None)
+            return
+        if now - self.hot_since.setdefault(key, now) < 5:
+            return
+        last = self.temp_said.get(key)
+        if last and deg < last[1] + 5 and now - last[0] < 600:
+            return
+        self.temp_said[key] = (now, deg)
+        self.last.pop(key, None)
+        self._call(again if last else first, key, 0)
 
     def _two_compounds_done(self, comp: str) -> bool:
         stints = {h[2] for h in self.eng.tyres.history} | {comp}

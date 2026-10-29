@@ -21,6 +21,8 @@ import time
 
 import numpy as np
 
+from f1engineer import radio
+
 STT_PROMPT = ("F1 race engineer radio, driver talking to the engineer. Hey Bono. What setup changes should I make? "
               "What's my driving style? Am I improving? Tyre temps, tyre wear, gap ahead, gap behind, laps left, coasting, "
               "steering, braking, throttle, corners, traction, understeer, oversteer. Silverstone, Monza, Spa, Monaco, Copse, Maggotts, Becketts, Stowe, Vale, Club, "
@@ -72,8 +74,6 @@ def _bandpass(sr: int, lo: float = 300, hi: float = 3400, taps: int = 101) -> np
     return (h * np.hamming(taps)).astype(np.float32)
 
 
-COMMON_STARTS = {"You", "You're", "Your", "The", "That", "This", "It", "It's", "Gap", "Box", "Stay", "Keep", "Push",
-                 "Gaining", "Pulling", "Still", "Good", "Nice", "No", "One", "Two", "Three", "Brake", "Lift", "Get"}
 FX = {"light": (180, 6500, 1.2), "full": (300, 3400, 2.5)}   # band (Hz) and saturation drive
 
 
@@ -465,8 +465,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 return
             text = it.text
             if it.resumed:   # cut off earlier by the driver: pick the thread back up
-                first = text.split(" ", 1)[0]
-                text = "As I was saying, " + (text[:1].lower() + text[1:] if first in COMMON_STARTS else text)
+                text = "As I was saying, " + radio.follow_on(text)
                 it.resumed = False
                 log(f"resuming after the driver: {text[:60]!r}")
             try:
@@ -525,6 +524,9 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 return
             audio = np.concatenate(rec["chunks"])[:, 0]
             level = 20 * np.log10(float(np.sqrt(np.mean(audio ** 2))) + 1e-9)
+            if level < -85:              # pure digital zeros: nobody spoke (a stray key press), don't answer it
+                log(f"PTT released: {len(audio) / 16000:.1f}s of pure silence (no voice; stray press or muted mic)")
+                return
             if len(audio) < 16000 * 0.3:
                 log(f"PTT released after {len(audio) / 16000:.2f}s: too short, hold the key while you speak")
                 outq.put(("transcript", "", 0))
@@ -627,6 +629,11 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 log(f"wake transcription failed: {e!r}")
                 continue
             if not text or W.is_phantom(text) or echo(text):
+                continue
+            if window_until and W.split_wake(text, names)[0] and not W.split_wake(text, names)[1].strip(" .?!"):
+                speak_cached(random.choice(GO_AHEAD))   # just the name again: still listening, no AI round trip
+                gate.reset()
+                open_window()
                 continue
             if window_until:                       # the question after "Go ahead"
                 close_window()

@@ -213,7 +213,7 @@ def lead_in(question: str) -> str:
     t = next((name for rx, name in TOPICS if rx.search(question.lower())), None)
     if t:
         return random.choice([f"On {t}: ", f"Back to your question on {t}: ", f"About {t}: "])
-    return random.choice(["On what you asked: ", "Back to your question: "])
+    return ""
 
 
 def _say(*options: str) -> str:
