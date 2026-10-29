@@ -70,6 +70,7 @@ class Engine:
         self.parsers = formats.Parsers()
         self.game = None          # e.g. "F1 24", from the packets
         self.stats = {"packets": 0, "parse_errors": 0, "last_lap_analysis_ms": 0.0}
+        self.t_start = time.time()
         self._bg: queue.Queue = queue.Queue(maxsize=200)
         self._stop = threading.Event()
         self._last_buttons = 0
@@ -761,9 +762,18 @@ class Engine:
         return ("NO TELEMETRY YET (" + got + "): the game only sends data once a session is loaded (garage or on "
                 "track); menus and loading screens send nothing, so the track, car, setup and laps are unknown. "
                 + (f"Last session here was {last[0]} ({last[1]}). " if last else "")
-                + "Tell the driver plainly you're not getting data yet (still in the menus/loading?). For setup or "
-                  "track questions, ask which track (or confirm the last one) and give a baseline from knowledge for "
-                  "it; real tuning once they're on track.")
+                + "Tell the driver plainly you're not getting data from the game; do NOT tell them they're in the "
+                  f"menus (they may be on track). {self.no_data_line()} For setup or track questions, ask which track "
+                  "(or confirm the last one) and give a baseline from knowledge for it; real tuning once data flows.")
+
+    def no_data_line(self) -> str:
+        """What to tell a driver who asks for live data before any has arrived (instant, no AI)."""
+        if self.stats["packets"]:
+            return "Data's starting to come in, give me a few seconds."
+        if time.time() - self.t_start < 60:
+            return "No data from the game yet. It starts once the session has loaded."
+        return (f"I'm getting nothing from the game. If you're in a session, check Settings, Telemetry: UDP on, port "
+                f"{self.cfg.udp_port}, format 2020. Restarting the session also kicks it.")
 
     def _context(self) -> str:
         """Compact live snapshot sent with every question: simple questions need no tool round trip."""

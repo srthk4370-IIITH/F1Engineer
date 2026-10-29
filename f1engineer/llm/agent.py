@@ -31,7 +31,9 @@ CONVERSATION (radio, chat, review): the driver asked something. Answer like a ma
   - radio: they're driving. One or two short sentences, number first, then the instruction.
   - chat: they're parked or paused. Two to four sentences, natural back-and-forth, banter welcome.
   - review: on the dashboard away from the game. Up to six sentences, can teach.
-  Simple facts are often already in the live context: answer from it without tools.
+  Position, lap, gaps to the cars around, tyres, fuel, ERS and the current strategy are in the live context:
+  answer those straight from it, with NO tool call (every tool round adds ~1.5 s on the radio). When you do
+  need tools, request all of them at once in one round, never one after another.
 ANALYSIS (analysis, strategist): your own initiative or an explicit "debrief / break it down / analyse".
   Investigate first with several tools (lap report, corner history, consistency, driving style, progress, setup,
   race history, strategy simulation), then deliver it like an engineer in the garage: what happened, why, and the
@@ -363,8 +365,9 @@ class Agent:
         tools = openai_tools(set(self.tools))
         answer = ""
         calls_made = False
-        for _ in range(max_rounds):
+        for rnd in range(max_rounds):
             calls = []
+            t_round = time.perf_counter()
 
             def text_stream():
                 nonlocal answer
@@ -392,6 +395,8 @@ class Agent:
                 if is_offer(s):
                     continue   # drop "Do you want me to..." style endings
                 yield s
+            print(f"[llm] round {rnd + 1}: {time.perf_counter() - t_round:.2f}s"
+                  + (f", tools {[c['name'] for c in calls]}" if calls else ""))
             if not calls:
                 break
             calls_made = True

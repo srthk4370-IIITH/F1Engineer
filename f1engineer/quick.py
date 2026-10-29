@@ -137,6 +137,8 @@ def answer(eng, question: str) -> str | None:
     if intent == "plan_stop":
         eng.plan = None
         return "Plan stopped."
+    if not eng.tr.session and eng.tr.lapdata is None and not eng.reports:
+        return eng.no_data_line()   # a live-data question with no data yet: say so now, don't make the AI guess
     try:
         if intent in ("rival", "losing"):
             return rival_answer(eng, question)
