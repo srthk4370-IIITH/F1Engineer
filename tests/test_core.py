@@ -515,3 +515,17 @@ def test_rival_questions_route_to_data_answers():
          "brake_m": [800.0, 812.0], "full_throttle_m": [None, None]}
     w = rival.why(c, "VERSTAPPEN")
     assert "Verstappen brakes 12 m later" in w and "12 km/h more" in w
+
+
+def test_gap_calls_say_the_right_direction():
+    """Gap trend calls: gaining/losing on the car ahead, closing/dropping behind - never the wrong way round."""
+    from f1engineer.engine import Engine
+    base = {"trend_3_sectors_s": None, "rate_per_lap_s": 0.0, "where": []}
+    t = Engine._gap_text
+    assert t(None, {**base, "side": "ahead", "driver": "Bottas", "gap_s": 1.2, "change_s": -0.3}).startswith("Bottas is pulling away")
+    assert t(None, {**base, "side": "ahead", "driver": "Bottas", "gap_s": 2.0, "change_s": 0.3,
+                    "rate_per_lap_s": 0.5}).startswith("Gaining on Bottas")
+    assert "defend" in t(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 0.7, "change_s": -0.4})
+    assert t(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 1.7, "change_s": 0.4}).startswith("Pulling away from")
+    b = Engine._gap_brief(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 0.7, "change_s": -0.4}, "x")
+    assert "IS CLOSING" in b and "defend" in b

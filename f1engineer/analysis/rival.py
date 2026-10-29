@@ -172,13 +172,13 @@ def compare(eng, other: int) -> dict:
         for cname, s, e in segs:
             c = _corner(me, th, s, e)
             if c is not None:
-                corners.append({"corner": cname, **c, "why": why(c, name)})
+                corners.append({"corner": cname, "start_m": round(s), "end_m": round(e), **c, "why": why(c, name)})
         if not corners:
             continue
         total = round(_at(me, "t", me["dist"][-1]) - _at(th, "t", me["dist"][-1]), 3)
         out[label] = {"lap": n, "upto_m": round(upto), "complete": upto > 0.95 * L, "total_loss_s": total,
                       "losses": sorted([c for c in corners if c["loss_s"] >= 0.05], key=lambda c: -c["loss_s"])[:4],
-                      "gains": sorted([c for c in corners if c["loss_s"] <= -0.05], key=lambda c: c["loss_s"])[:3]}
+                      "gains": sorted([c for c in corners if c["loss_s"] <= -0.05], key=lambda c: c["loss_s"])[:3], "corners": corners}
     if "this_lap" not in out and "last_lap" not in out:
         out["error"] = "not enough of a lap from both cars yet (a few hundred metres is enough)"
     return out

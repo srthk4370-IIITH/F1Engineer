@@ -97,7 +97,7 @@ class Engine:
         tr.on("sc_change", self._on_sc)
         tr.on("flashback", lambda t: self.sched.clear())
         tr.on("sector", lambda car, sector: (self.coach.on_sector(sector), self._bg_put(self._sector_rival, sector)))
-        self._sector_seen: dict[tuple, float] = {}
+        self._gap_track: dict[int, dict] = {}
 
     # ---- ingest ------------------------------------------------------------------
     def feed(self, data: bytes, wall: float | None = None) -> None:
@@ -199,7 +199,7 @@ class Engine:
         self.race_eng = RaceEngineer(self)
         self.patterns = Patterns(self)
         self._unanalysed = None   # (the conversation itself carries on across sessions, like a real engineer)
-        self._sector_seen = {}
+        self._gap_track = {}
         self._first_review = None
         self._bg_put(self.store.start_session, tr.session_uid, tr.track, tr.session_type, tr.packet_format)
         # stored personal best becomes the initial reference
@@ -578,48 +578,135 @@ class Engine:
         return self.race
 
     def _sector_rival(self, sector: int) -> None:
-        """Race: after each sector, what changed against the car ahead (and a close car behind), and where."""
+        """Race, every sector: is the real gap to the car ahead / behind growing or shrinking, and where?
+
+        Detection is data (the race gap at each sector line, plus a corner-by-corner comparison of the stretch just
+        driven). One sector moving 0.15 s, or three sectors in a row the same way adding up to 0.3 s, is a call. The AI
+        phrases it like an engineer (what it means, attack/defend/fix) when it answers within 5 s; otherwise the
+        data line goes out as is.
+        """
         from f1engineer.analysis import rival
         tr = self.tr
         if not tr.is_race or tr.lapdata is None or time.time() < self.quiet_until:
             return
         snap = self.race_now()
+        if snap.get("safety_car", "none") != "none" or snap.get("pit_status"):
+            return
         pos = snap.get("position") or 0
-        a, b = snap.get("ahead") or {}, snap.get("behind") or {}
-        by_pos = {int(tr.lapdata[i]["carPosition"]): i for i in range(22)}
-        targets = []
-        if a.get("gap_s") is not None and a["gap_s"] < 4:
-            targets.append(("ahead", by_pos.get(pos - 1)))
-        if b.get("gap_s") is not None and b["gap_s"] < 1.5:
-            targets.append(("behind", by_pos.get(pos + 1)))
-        for side, idx in targets:
-            if idx is None:
+        by_pos = {int(tr.lapdata[i]["carPosition"]): i for i in range(22) if int(tr.lapdata[i]["carPosition"]) > 0}
+        lap = int(tr.lapdata[tr.player_idx]["currentLapNum"])
+        dist = float(tr.lapdata[tr.player_idx]["lapDistance"])
+        calls = []
+        for side, idx, limit in (("ahead", by_pos.get(pos - 1), 6.0), ("behind", by_pos.get(pos + 1), 3.0)):
+            if idx is None or int(tr.lapdata[idx]["pitStatus"]):
                 continue
-            if sector == 0:                     # new lap: start counting again
+            g = self.gaps.gap(tr.player_idx, idx) if side == "ahead" else self.gaps.gap(idx, tr.player_idx)
+            st = self._gap_track.get(idx)
+            if g is None or g > limit:
+                self._gap_track.pop(idx, None)
                 continue
+            if st is None or st["side"] != side:      # a new car next to us: start watching it
+                self._gap_track[idx] = {"side": side, "g": g, "hist": deque(maxlen=3), "lap": lap, "dist": dist,
+                                        "trend_said": None}
+                continue
+            # + = good for us (gaining on the car ahead / pulling away from the car behind)
+            d = (st["g"] - g) if side == "ahead" else (g - st["g"])
+            st["hist"].append(d)
+            from_lap, from_dist = st["lap"], st["dist"]
+            st.update(g=g, lap=lap, dist=dist)
+            h = list(st["hist"])
+            trend = len(h) == 3 and (all(x > 0 for x in h) or all(x < 0 for x in h)) and abs(sum(h)) >= 0.3
+            if abs(d) < 0.15 and not (trend and st["trend_said"] != lap):
+                continue
+            if trend:
+                st["trend_said"] = lap
+            # where: corners of the stretch just driven (this lap since the last line, or the end of the last lap)
             r = rival.compare(self, idx)
-            part = r.get("this_lap")
-            if not part:
-                continue
-            key = (idx, part["lap"])
-            # baseline: 0 at the start of the lap; a car that only just became the one ahead gets one first
-            prev = self._sector_seen.get(key, 0.0 if sector == 1 else None)
-            self._sector_seen[key] = part["total_loss_s"]
-            if prev is None:
-                continue
-            d = part["total_loss_s"] - prev     # what changed in this sector
-            if abs(d) < 0.15:
-                continue
-            them = r["driver"]
-            worst = (part["losses"] if d > 0 else part["gains"])[:1]
-            where = (f" Mostly at {worst[0]['corner']}" + (f": {worst[0]['why']}" if worst[0]["why"] else "") + ".") if worst else ""
+            part = r.get("this_lap") if from_lap == lap else r.get("last_lap")
+            stretch = [c for c in (part or {}).get("corners", []) if c["start_m"] >= from_dist - 20]
+            good = d > 0
+            key_c = sorted([c for c in stretch if (c["loss_s"] < -0.04) == good and abs(c["loss_s"]) >= 0.04],
+                           key=lambda c: -abs(c["loss_s"]))[:2]
+            per_lap = sum(h) / len(h) * 3      # ~ rate per lap from the last sectors
+            calls.append({"side": side, "driver": r["driver"], "gap_s": round(g, 2), "change_s": round(d, 2),
+                          "trend_3_sectors_s": round(sum(h), 2) if trend else None, "rate_per_lap_s": round(per_lap, 2),
+                          "where": [{"corner": c["corner"], "delta_s": round(-c["loss_s"], 2), "why": c["why"]}
+                                    for c in key_c]})
+        if not calls:
+            return
+        # the car behind closing into DRS beats everything; otherwise the bigger change
+        calls.sort(key=lambda c: (not (c["side"] == "behind" and c["change_s"] < 0 and c["gap_s"] < 1.5),
+                                  -abs(c["trend_3_sectors_s"] or c["change_s"])))
+        c = calls[0]
+        text = self._gap_text(c)
+        prio = 3 if (c["side"] == "behind" and c["change_s"] < 0 and c["gap_s"] < 1.5) else 4
+        key = f"gap{c['driver']}"
+        brief = self._gap_brief(c, text)
+        self._ai_line(brief, text, prio, key, evidence=abs(c["change_s"]))
+
+    def _gap_brief(self, c: dict, text: str) -> str:
+        """The facts in plain words (signed numbers get misread), so the AI only phrases and adds the action."""
+        them, side, good = c["driver"], c["side"], c["change_s"] > 0
+        situation = {("ahead", True): f"WE ARE GAINING on {them}, the car AHEAD of us",
+                     ("ahead", False): f"WE ARE LOSING time to {them}, the car AHEAD of us; he is pulling away",
+                     ("behind", False): f"{them}, the car BEHIND us, IS CLOSING on us",
+                     ("behind", True): f"WE ARE PULLING AWAY from {them}, the car BEHIND us"}[(side, good)]
+        action = {("ahead", True): "keep it up and attack",
+                  ("ahead", False): "the driving fix at that corner to stop the bleeding",
+                  ("behind", False): "defend (and the fix at that corner)",
+                  ("behind", True): "keep doing it, stay clean"}[(side, good)]
+        return ("(Pit wall: a gap call, not a driver question.) " + situation + ". The data line, which is correct: \""
+                + text + "\" Say it as the engineer in at most two short sentences: who and how much, where, then "
+                + action + ". Never change who is gaining or losing, or the numbers.")
+
+    def _gap_text(self, c: dict) -> str:
+        """The data version of a gap call (also the fallback when the AI is slow or unreachable)."""
+        them, d, g = c["driver"], c["change_s"], c["gap_s"]
+        amt = abs(c["trend_3_sectors_s"] or d)
+        span = "over three sectors" if c["trend_3_sectors_s"] else "that sector"
+        w = c["where"][0] if c["where"] else None
+        where = (f" {w['corner']}" + (f": {w['why']}" if w["why"] else "") + ".") if w else ""
+        if c["side"] == "ahead":
             if d > 0:
-                text = (f"Lost {d:.1f} to {them} that sector." if side == "ahead"
-                        else f"{them}'s taken {d:.1f} out of you that sector.") + where
-            else:
-                text = (f"Took {abs(d):.1f} out of {them} that sector." if side == "ahead"
-                        else f"Pulled {abs(d):.1f} on {them} that sector.")
-            self.sched.push([radio.Message(4, radio.CLOCK(), text, "straight", 25, f"rival{idx}", evidence=abs(d))])
+                eta = (g - 1.0) / c["rate_per_lap_s"] if c["rate_per_lap_s"] > 0.05 and g > 1.0 else None
+                tail = f" DRS in {max(1, round(eta))} laps at this rate." if eta and eta < 8 else ""
+                return f"Gaining on {them}, {amt:.1f} {span}, gap {g:.1f}." + (f" Quicker at{where}" if w else "") + tail
+            return f"{them} is pulling away, {amt:.1f} {span}, gap {g:.1f}." + (f" It's{where}" if w else "")
+        if d < 0:
+            tail = " He's in DRS, defend." if g < 1.0 else ""
+            return f"{them} is closing, {amt:.1f} {span}, {g:.1f} behind." + (f" He's quicker at{where}" if w else "") + tail
+        return f"Pulling away from {them}, {amt:.1f} {span}, now {g:.1f}." + (f" Good at{where}" if w else "")
+
+    def _ai_line(self, brief: str, fallback: str, prio: int, key: str, evidence: float = 0.0, wait: float = 5.0) -> None:
+        """Say `fallback`, or the AI's version of it if the AI answers within `wait` seconds (never both)."""
+        def push(text):
+            self.sched.push([radio.Message(prio, radio.CLOCK(), text, "straight", 25, key, evidence=evidence)])
+        down = max(getattr(self, "_ai_down_said", 0), getattr(self, "_ai_fail_t", 0))
+        if isinstance(self.agent.provider, MockProvider) or time.time() - down < 120:
+            push(fallback)
+            return
+        done = threading.Event()
+        lock = threading.Lock()
+
+        def run():
+            text = self.agent.phrase(brief)
+            if text is None:
+                self._ai_fail_t = time.time()   # AI unreachable: data lines for the next 2 minutes
+            with lock:
+                if done.is_set():
+                    return          # too late: the data line already went out
+                done.set()
+            push(text if text and "SILENT" not in text.upper()[:10] else fallback)
+
+        def timeout():
+            if not done.wait(wait):
+                with lock:
+                    if done.is_set():
+                        return
+                    done.set()
+                push(fallback)
+        threading.Thread(target=run, daemon=True).start()
+        threading.Thread(target=timeout, daemon=True).start()
 
     # ---- background work -----------------------------------------------------------
     def _bg_put(self, fn, *args) -> None:

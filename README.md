@@ -209,9 +209,13 @@ words. Things to try:
 
 **Racing other drivers.** Every car's speed, braking and throttle are recorded, so he compares you with any driver
 corner by corner, from the first few hundred metres of lap 1 ("0.6 down to Verstappen this lap so far. Luffield, 0.12:
-he carries 9 km/h more through the apex"). No name means the car ahead. After each sector he calls what changed
-against the car ahead (and a close car behind): "Lost 0.3 to Bottas that sector. Mostly at Village: Bottas brakes 9 m
-later." These are data answers: instant, and they still work if the internet or the AI drops out.
+he carries 9 km/h more through the apex"). No name means the car ahead. Every sector he
+watches the real gap to the car ahead (within 6 s) and behind (within 3 s): when it moves 0.15 s in a sector, or the
+same way three sectors running, he calls it with where it happened and what to do ("Ricciardo is closing, 0.6 that
+sector, 0.8 behind. He's quicker at Village: brakes 9 m later. He's in DRS, defend." / "Gaining on Verstappen, 0.5 over
+three sectors. DRS in 2 laps at this rate."). The data spots it; the AI phrases it and adds the action when it answers
+within 5 s, otherwise the data line goes out. The question answers are data answers: instant, and they still work if
+the internet or the AI drops out.
 
 ---
 

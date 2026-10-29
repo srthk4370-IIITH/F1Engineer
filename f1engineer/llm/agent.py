@@ -186,8 +186,8 @@ class OpenAIProvider:
             if effort and "reasoning_effort" in kw and effort in self._efforts:
                 kw["reasoning_effort"] = effort   # deeper thinking when there's time (garage / review)
             try:
-                return self.client.chat.completions.create(model=self.model, messages=messages, tools=tools,
-                                                           stream=True, **kw)
+                return self.client.chat.completions.create(model=self.model, messages=messages, stream=True,
+                                                           **({"tools": tools} if tools else {}), **kw)
             except Exception as e:
                 msg = str(e)
                 if "temperature" in msg and "temperature" in self.kw:
@@ -335,6 +335,22 @@ class Agent:
         self.provider = provider or make_provider()
         self.history: list[dict] = []
         self.offline_fn: Callable[[str], str | None] | None = None   # data answer when the AI can't be reached
+
+    def phrase(self, brief: str, max_tokens: int = 120) -> str | None:
+        """One quick radio line from facts we already have (no tools, no offline fallback): None if the AI is
+        unreachable, so the caller can use its own template."""
+        if isinstance(self.provider, MockProvider):
+            return None
+        sys = {"role": "system", "content": SYSTEM_PROMPT.format(name=self.name, sass=self.sass, mode="radio",
+                                                                 profile=self.profile_fn(), context=self.context_fn())}
+        try:
+            text = "".join(ev["text"] for ev in self.provider.stream([sys, {"role": "user", "content": brief}], [],
+                                                                     effort=MODES["radio"]["effort"], max_tokens=max_tokens)
+                           if ev["type"] == "text").strip()
+        except Exception as e:
+            print(f"[llm] quick call failed: {str(e)[:200]}")
+            return None
+        return text or None
 
     def ask(self, question: str, max_rounds: int = 4, mode: str = "radio", remember: bool = True,
             history: list | None = None) -> Iterator[str]:
