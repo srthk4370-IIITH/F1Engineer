@@ -1,4 +1,4 @@
-// F1 Engineer dashboard: telemetry comparison (up to 3 laps, same track), timing, race, live, engineer chat.
+// F1 Engineer dashboard: live (timing tower, map, delta, car, radio), full timing, lap analysis, sessions, engineer chat.
 const $ = (id) => document.getElementById(id);
 const fmt = (s) => { if (!s) return "-"; const m = Math.floor(s / 60); const r = (s - m * 60).toFixed(3).padStart(6, "0"); return m ? `${m}:${r}` : r; };
 const sgn = (v, d = 3) => (v > 0 ? "+" : v < 0 ? "−" : "±") + Math.abs(v).toFixed(d);
@@ -6,7 +6,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const LAPCOL = () => [css("--lap1"), css("--lap2"), css("--lap3")];
 const GRID = "#20232a", AXIS = "#6f7480";
-let OFFLINE = true;
+let OFFLINE = true, LIVE = false, STATE = {};
 
 // ---------------------------------------------------------------- helpers
 function interp(x, xs, ys) {
@@ -21,14 +21,15 @@ function nearestIdx(x, xs) {
 }
 const tAt = (lap, d) => interp(d, lap.trace.dist, lap.trace.t);
 const TYRE = { soft: "S", medium: "M", hard: "H", inter: "I", intermediate: "I", wet: "W" };
-const tyreBadge = (c, age) => c ? `<span class="tyre ${esc(String(c).toLowerCase().replace("intermediate", "inter"))}" title="${esc(c)}${age != null ? `, ${age} laps old` : ""}">${TYRE[String(c).toLowerCase()] || "?"}</span>` : `<span class="muted">-</span>`;
+const tyreBadge = (c, age) => c && c !== "?" ? `<span class="tyre ${esc(String(c).toLowerCase().replace("intermediate", "inter"))}" title="${esc(c)}${age != null ? `, ${age} laps old` : ""}">${TYRE[String(c).toLowerCase()] || "?"}</span>` : `<span class="muted">-</span>`;
 const isGhost = (l) => /personal best|rival|ghost/i.test(l.car || "");
 const lapLabel = (l) => l.car === "Player" ? `Lap ${l.lap}` : isGhost(l) ? "PB ghost" : `${(l.car || "Car").split(" ").pop()} L${l.lap}`;
 const EXPANDED = new Set();   // sessions whose other-driver laps are unfolded
 const sessDate = (ts) => ts ? new Date(ts * 1000).toLocaleString([], { weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
 function fitCanvas(c, hCss) {
   const dpr = devicePixelRatio || 1, w = c.clientWidth || 400, h = hCss || +c.dataset.h || c.clientHeight || w;
-  c.width = w * dpr; c.height = h * dpr; c.style.height = h + "px";
+  c.width = Math.round(w * dpr); c.height = Math.round(h * dpr);
+  if (!c.parentElement.classList.contains("mapwrap")) c.style.height = h + "px";
   const g = c.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
   g.font = "600 11px Titillium Web, sans-serif"; g.textBaseline = "middle";
   return { g, w, h };
@@ -38,63 +39,144 @@ function axes(yl, splits) {
   return [{ ...a, values: (u, v) => v.map((m) => m >= 1000 ? (m / 1000).toFixed(1) + " km" : m + " m") },
     { ...a, size: 46, label: yl, labelSize: 14, labelFont: "600 11px Titillium Web", ...(splits ? { splits: () => splits } : {}) }];
 }
+const short3 = (n) => (n || "?").split(" ").pop().slice(0, 3).toUpperCase();
+const surname = (n) => { const s = (n || "?").split(" ").pop(); return s[0] + s.slice(1).toLowerCase(); };
+// team colour bar by team id (F1 2020/2021 order; later games are close enough for a colour cue)
+const TEAM = ["#00d2be", "#dc0000", "#1e41ff", "#005aff", "#f596c8", "#fff500", "#c8c8c8", "#787878", "#ff8700", "#9b0000"];
+const teamCol = (t) => TEAM[t] || "#555b66";
 
 // ---------------------------------------------------------------- tabs
-const TABS = ["telemetry", "timing", "race", "live", "engineer"];
+const TABS = ["live", "timing", "laps", "sessions", "engineer"];
+let TAB = "live";
 function showTab(t) {
+  TAB = t;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
   TABS.forEach((k) => $("tab-" + k).classList.toggle("hidden", k !== t));
-  if (t === "telemetry") requestAnimationFrame(resizeAll);
-  if (t === "timing") drawTiming();
-  if (t === "race") drawRace();
+  if (t === "laps") requestAnimationFrame(resizeAll);
+  if (t === "live") requestAnimationFrame(() => { mapKey = null; drawLiveMap(); });
+  if (t === "timing" && LIVE) renderFullTower(STATE);
+  if (t === "sessions") drawSession();
   if (t === "engineer") loadMemory();
 }
-document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => { history.replaceState(null, "", "#" + b.dataset.tab + (b.dataset.tab === "telemetry" && SEL.length ? "?laps=" + SEL.map((s) => s.id).join(",") : "")); showTab(b.dataset.tab); });
+function goTab(t) { history.replaceState(null, "", "#" + t + (t === "laps" && SEL.length ? "?laps=" + SEL.map((s) => s.id).join(",") : "")); showTab(t); }
+document.querySelectorAll("#tabs button").forEach((b) => b.onclick = () => goTab(b.dataset.tab));
+document.addEventListener("click", (e) => { const a = e.target.closest("[data-go]"); if (a) { e.preventDefault(); goTab(a.dataset.go); } });
 
 // ---------------------------------------------------------------- live
 let lastReportKey = null, wasImporting = false;
-function tempColor(t) { return t < 80 ? "#1f3550" : t < 95 ? "#1f4a3a" : t < 108 ? "#2c4a1f" : "#5a2420"; }
+const HIST = new Map();   // car idx -> [[t, gap]] for the gap trend
+const tyreClass = (t) => t < 80 ? "cold" : t <= 105 ? "ok" : "hot";
+
 function renderState(s) {
-  OFFLINE = !!s.offline;
+  STATE = s;
+  OFFLINE = !!s.offline; LIVE = !OFFLINE && !!s.connected && !!(s.timing && s.timing.length);
   $("importing").classList.toggle("hidden", !s.importing);
   if (s.importing) $("importing").textContent = `Importing recording ${s.importing}…`;
   if (wasImporting && !s.importing) loadLaps();
   wasImporting = !!s.importing;
   $("dot").classList.toggle("on", !!s.connected);
-  $("conn-t").textContent = s.offline ? "review" : s.connected ? "live" : "waiting for game";
-  $("liveoff").classList.toggle("hidden", !s.offline);
-  if (s.offline) return;
-  $("h-game").textContent = s.game || "-"; $("h-track").textContent = s.track || "-"; $("h-mode").textContent = s.mode || "-";
-  $("h-input").textContent = s.input_device || "-";
-  if (s.lap) {
-    const d = s.lap.delta;
-    $("delta").textContent = d === undefined ? "-" : (d > 0 ? "+" : "") + d.toFixed(3);
-    $("delta").className = "big " + (d === undefined ? "" : d > 0 ? "neg" : "pos");
-    $("lapinfo").textContent = `Lap ${s.lap.num} · ${fmt(s.lap.time)} · last ${fmt(s.lap.last)} · best ${fmt(s.lap.best)}${s.lap.invalid ? " · invalid" : ""} · P${s.lap.position}`;
-  }
+  $("conn-t").textContent = s.offline ? "review mode" : s.connected ? "live" : "waiting for game";
+  $("strip").classList.toggle("hidden", !LIVE);
+  $("live-wait").classList.toggle("hidden", LIVE); $("live-grid").classList.toggle("hidden", !LIVE); $("live-more").classList.toggle("hidden", !LIVE);
+  $("timing-wait").classList.toggle("hidden", LIVE); $("timing-card").classList.toggle("hidden", !LIVE);
+  if (s.offline) {
+    $("wait-h").textContent = "Review mode";
+    $("wait-p").innerHTML = 'Not connected to the game. Your laps are under <a href="#laps" data-go="laps">Lap analysis</a> and <a href="#sessions" data-go="sessions">Sessions</a>.';
+  } else if (!LIVE) $("wait-h").textContent = s.connected ? "Session loading…" : "Waiting for the game";
+  if (!LIVE) return;
+  const ss = s.session || {}, lap = s.lap || {};
+  $("h-track").textContent = s.track || "-"; $("h-mode").textContent = s.mode || "-";
+  $("h-lap").textContent = lap.num ? `${lap.num}${ss.lap_total && ss.is_race ? " / " + ss.lap_total : ""}` : "-";
+  $("h-weather").textContent = ss.weather || "-";
+  $("h-temp").textContent = ss.track_temp != null ? `${ss.track_temp}° / ${ss.air_temp}°` : "-";
+  $("h-sc-wrap").classList.toggle("hidden", !ss.safety_car || ss.safety_car === "none");
+  $("h-sc").textContent = ss.safety_car === "virtual" ? "VIRTUAL SAFETY CAR" : "SAFETY CAR";
+  renderHero(s, lap, ss); renderTower(s); renderBattle(s, ss); renderCar(s); drawLiveMap(); renderMore(s, ss);
+  if (TAB === "timing") renderFullTower(s);
+}
+
+function renderHero(s, lap, ss) {
+  const me = s.timing.find((r) => r.me) || {};
+  $("pos").textContent = lap.position ? "P" + lap.position : "-";
+  $("pos-sub").textContent = `of ${s.timing.length}` + (me.pen ? ` · +${me.pen}s penalty` : "");
+  const d = lap.delta;
+  $("delta-l").textContent = s.reference ? `Delta to ${s.reference.label}` : "Delta";
+  $("delta").textContent = d === undefined ? "-" : (d > 0 ? "+" : "") + d.toFixed(3);
+  $("delta").className = d === undefined ? "" : d > 0 ? "neg" : "pos";
+  $("laptime").textContent = `${fmt(lap.time)}${lap.invalid ? " · invalid" : ""} · last ${fmt(lap.last)} ${lap.best ? " · best " + fmt(lap.best) : ""}`;
+  const sc = s.sectors || { sector: 0, now: [0, 0], last: [0, 0, 0], best: [0, 0, 0] }, cur = sc.sector;
+  $("secs").innerHTML = [0, 1, 2].map((k) => {   // done this lap: this lap's time; still to come: last lap's
+    const live = k < cur && sc.now[k] > 0, v = live ? sc.now[k] : sc.last[k];
+    const cls = !v ? "" : sc.best[k] && v <= sc.best[k] + 1e-3 ? "p" : "y";
+    return `<div class="${cls} ${k === cur ? "now" : ""} ${live ? "" : "old"}"><small>S${k + 1}</small>${v ? v.toFixed(3) : "—"}</div>`;
+  }).join("");
+  $("sec-note").textContent = "· this lap, faded = last lap · purple = your best";
+}
+function renderTower(s) {
+  const me = s.timing.find((r) => r.me), race = s.session && s.session.is_race, near = me ? [me.pos - 1, me.pos + 1] : [];
+  const bestAll = Math.min(...s.timing.map((r) => r.best > 0 ? r.best : 1e9));
+  $("tower-note").textContent = race ? "interval to the car ahead" : "gap to the fastest lap";
+  $("tower").innerHTML = s.timing.map((r) => {
+    const v = race ? (r.pos === 1 ? "Leader" : r.int != null ? "+" + r.int.toFixed(3) : "-") : (r.best > 0 ? (r.gap ? "+" + r.gap.toFixed(3) : fmt(r.best)) : "no time");
+    const status = r.out ? "OUT" : r.pit ? "PIT" : r.done ? "FIN" : "";
+    const fl = r.best > 0 && r.best === bestAll ? '<span class="flag" style="color:var(--purple)">FL</span>' : "";
+    return `<div class="trow ${r.me ? "me" : ""} ${near.includes(r.pos) ? "near" : ""} ${r.pit ? "pit" : ""} ${r.out ? "out" : ""}" title="${esc(r.name)} · last ${fmt(r.last)} · best ${fmt(r.best)}">
+      <span class="p">${r.pos}</span><span class="tc" style="background:${teamCol(r.team)}"></span>
+      <span class="nm">${esc(short3(r.name))}${status ? `<span class="flag">${status}</span>` : ""}${fl}</span>
+      <span class="iv">${status === "PIT" ? "in pit" : v}</span>${tyreBadge(r.tyre, r.tyre_age)}</div>`;
+  }).join("");
+}
+function trendOf(idx, val, now) {
+  const h = HIST.get(idx) || []; h.push([now, val]); while (h.length && now - h[0][0] > 40) h.shift(); HIST.set(idx, h);
+  const old = h.find((p) => now - p[0] >= 20);
+  return old && val != null && old[1] != null ? (val - old[1]) / (now - old[0]) * 90 : null;   // change per ~90 s (about a lap)
+}
+function renderBattle(s, ss) {
+  if (!ss.is_race) { $("battle").innerHTML = ""; return; }
+  const me = s.timing.find((r) => r.me); if (!me) return;
+  const ahead = s.timing.find((r) => r.pos === me.pos - 1), behind = s.timing.find((r) => r.pos === me.pos + 1), now = Date.now() / 1000;
+  const card = (label, car, gap) => {
+    if (!car) return `<div class="bcar"><small>${label}</small><div class="who muted">${label === "Ahead" ? "You're leading" : "Nobody behind"}</div></div>`;
+    const tr = trendOf(car.idx, gap, now);
+    let t = "holding steady", cls = "";
+    if (tr == null) t = "&nbsp;";
+    else if (Math.abs(tr) >= 0.1) {
+      const shrinking = tr < 0;
+      t = label === "Ahead" ? (shrinking ? "you're closing" : "he's pulling away") : (shrinking ? "he's closing" : "you're pulling away");
+      t += ` · about ${Math.abs(tr).toFixed(1)} s a lap`;
+      cls = (label === "Ahead") === shrinking ? "good" : "bad";
+    }
+    const drs = gap != null && gap < 1;
+    return `<div class="bcar ${drs ? "drs" : ""}"><small>${label}${drs ? " · in DRS range" : ""}</small>
+      <div class="who"><span style="display:inline-block;width:4px;height:18px;border-radius:2px;background:${teamCol(car.team)}"></span>${esc(surname(car.name))} ${tyreBadge(car.tyre, car.tyre_age)}</div>
+      <div class="gap">${gap != null ? gap.toFixed(1) + "s" : "-"}</div><div class="trend ${cls}">${t}</div></div>`;
+  };
+  $("battle").innerHTML = card("Ahead", ahead, me.int) + card("Behind", behind, behind ? behind.int : null);
+}
+function renderCar(s) {
   if (s.car) {
     $("speed").textContent = s.car.speed; $("gear").textContent = s.car.gear <= 0 ? (s.car.gear < 0 ? "R" : "N") : s.car.gear;
-    $("rev").style.width = Math.min(100, s.car.rpm / 125) + "%";
     $("thr").style.width = s.car.throttle * 100 + "%"; $("brk").style.width = s.car.brake * 100 + "%";
     const names = ["RL", "RR", "FL", "FR"], order = [2, 3, 0, 1], wear = (s.status && s.status.tyre_wear) || [];
-    $("tyres").innerHTML = order.map((i) => `<div class="tyrebox" style="background:${tempColor(s.car.tyre_surface[i])}"><small>${names[i]}</small><b>${s.car.tyre_surface[i]}°</b><small>inner ${s.car.tyre_inner[i]}° · ${wear[i] ?? "-"}%</small></div>`).join("");
+    $("tyres").innerHTML = order.map((i) => `<div class="tyrebox ${tyreClass(s.car.tyre_surface[i])}"><small>${names[i]} · ${wear[i] ?? "-"}% worn</small><b>${s.car.tyre_surface[i]}°</b><small>inner ${s.car.tyre_inner[i]}°</small></div>`).join("");
   }
   if (s.status) {
-    $("compound").innerHTML = `${tyreBadge(s.status.compound)} ${s.status.tyre_age} laps`;
-    $("fuel").textContent = (s.status.fuel_laps > 0 ? "+" : "") + s.status.fuel_laps + " laps";
-    $("ers").textContent = s.status.ers_pct + "%"; $("tc").textContent = ["off", "medium", "full"][s.status.tc] ?? "-";
-    $("abs").textContent = s.status.abs ? "on" : "off";
+    $("compound").innerHTML = `${tyreBadge(s.status.compound)} ${s.status.tyre_age ?? "-"} lap${s.status.tyre_age === 1 ? "" : "s"} old`;
+    const f = s.status.fuel_laps;
+    $("fuel").textContent = (f > 0 ? "+" : "") + f + " laps"; $("fuel").className = f < 0 ? "bad" : "";
+    $("ers").textContent = s.status.ers_pct + "%";
+    $("aids").textContent = `${["off", "med", "full"][s.status.tc] ?? "-"} / ${s.status.abs ? "on" : "off"}`;
   }
-  if (s.race && s.race.position) {
-    const r = s.race;
-    $("racebox").innerHTML = `P${r.position} · ahead ${r.ahead ? esc(r.ahead.name) + " " + (r.ahead.gap_s ?? "-") + "s" : "-"} · behind ${r.behind ? esc(r.behind.name) + " " + (r.behind.gap_s ?? "-") + "s" : "-"}`;
-  }
+}
+function renderMore(s, ss) {
+  const practice = !ss.is_race;
+  $("advice-card").classList.toggle("hidden", !practice); $("plan-card").classList.toggle("hidden", !practice || !s.plan);
   const rep = s.last_report;
   if (rep && rep.lap_num + ":" + rep.lap_time !== lastReportKey) {
     lastReportKey = rep.lap_num + ":" + rep.lap_time;
-    $("report").innerHTML = `<div class="sub">Lap ${rep.lap_num} ${fmt(rep.lap_time)} vs ${esc(rep.ref_label)} (${sgn(rep.delta)})</div>
-      <table class="grid-table"><thead><tr><th>Corner</th><th>Δ s</th><th>Apex</th><th>Why</th></tr></thead><tbody>${rep.corners.map((c) =>
-      `<tr><td class="label">${esc(c.corner)}</td><td class="${c.time_loss > 0.02 ? "slower" : c.time_loss < -0.02 ? "faster" : ""}">${sgn(c.time_loss)}</td><td>${c.min_speed}</td><td class="muted" style="text-align:left;font:400 12px var(--font)">${esc(c.causes.slice(0, 2).join("; "))}</td></tr>`).join("")}</tbody></table>`;
+    $("report-h").textContent = `Lap ${rep.lap_num} · ${fmt(rep.lap_time)} vs ${rep.ref_label} (${sgn(rep.delta)})`;
+    $("report").innerHTML = `<table class="grid-table"><thead><tr><th>Corner</th><th>Δ s</th><th>Apex km/h</th><th style="text-align:left">Why</th></tr></thead><tbody>${rep.corners.map((c) =>
+      `<tr><td class="label">${esc(c.corner)}</td><td class="${c.time_loss > 0.02 ? "slower" : c.time_loss < -0.02 ? "faster" : ""}">${sgn(c.time_loss)}</td><td>${c.min_speed}</td><td class="muted" style="text-align:left;font:400 12px var(--font);white-space:normal">${esc(c.causes.slice(0, 2).join("; "))}</td></tr>`).join("")}</tbody></table>`;
   }
   if (s.plan) {
     $("plan-goal").textContent = s.plan.goal;
@@ -102,12 +184,76 @@ function renderState(s) {
   }
   if (s.advice && s.advice.length) $("advice").innerHTML = s.advice.map((a) => `<li><b>${esc(a.change)}</b><br><small>${esc(a.why)}</small></li>`).join("");
 }
+function renderFullTower(s) {
+  if (!s.timing) return;
+  const race = s.session && s.session.is_race, bestAll = Math.min(...s.timing.map((r) => r.best > 0 ? r.best : 1e9));
+  $("ft-note").textContent = `${s.track || ""} · ${s.mode || ""}` + (race ? " · gaps measured at the same point on track" : " · ordered by best lap");
+  const cur = (r, k) => { const v = k === 0 ? r.s1 : r.s2; return v && r.sector > k ? (v / 1000).toFixed(3) : "-"; };
+  $("fulltower").innerHTML = `<thead><tr><th>Pos</th><th style="text-align:left">Driver</th><th>Gap</th><th>Interval</th><th>Last lap</th><th>Best lap</th><th>S1</th><th>S2</th><th>Lap</th><th>Tyre</th><th>Status</th></tr></thead><tbody>` +
+    s.timing.map((r) => `<tr class="${r.me ? "me" : ""}"><td>${r.pos}</td><td class="nm"><span class="tc" style="background:${teamCol(r.team)}"></span>${esc(r.name)}</td>
+      <td>${r.pos === 1 && race ? "Leader" : r.gap != null ? "+" + r.gap.toFixed(3) : "-"}</td><td>${r.int != null ? "+" + r.int.toFixed(3) : "-"}</td>
+      <td class="${r.last > 0 && r.last === bestAll ? "p" : r.last > 0 && r.last === r.best ? "g" : ""}">${fmt(r.last)}</td>
+      <td class="${r.best > 0 && r.best === bestAll ? "p" : ""}">${fmt(r.best)}</td><td>${cur(r, 0)}</td><td>${cur(r, 1)}</td><td>${r.lap}</td>
+      <td>${tyreBadge(r.tyre, r.tyre_age)} <small>${r.tyre_age ?? ""}</small></td>
+      <td class="${r.pit || r.out ? "y" : ""}">${r.out ? "out" : r.pit ? "in pit" : r.done ? "finished" : ""}${r.pen ? ` +${r.pen}s` : ""}</td></tr>`).join("") + "</tbody>";
+}
+
+// ---- live map: track drawn once on the base canvas; cars cleared and redrawn on the overlay every update
+let outline = null, outlineTrack = null, trail = [], trailTrack = null, mapKey = null, mapT = null, lastOutlineFetch = 0;
+async function fetchOutline(track) {
+  if (Date.now() - lastOutlineFetch < 8000) return;
+  lastOutlineFetch = Date.now();
+  try {
+    const o = await (await fetch("/api/track")).json();
+    if (o.x && o.x.length > 50 && o.track === track) { outline = o; outlineTrack = track; mapKey = null; }
+  } catch {}
+}
+function drawLiveMap() {
+  const s = STATE;
+  if (!LIVE || TAB !== "live") return;
+  if (outline && outlineTrack !== s.track) { outline = null; mapKey = null; }
+  if (trailTrack !== s.track) { trail = []; trailTrack = s.track; mapKey = null; }
+  if (!outline) fetchOutline(s.track);
+  const me = s.timing.find((r) => r.me);
+  if (!outline && me && me.x != null) { const p = trail[trail.length - 1]; if (!p || Math.hypot(p[0] - me.x, p[1] - me.z) > 8) trail.push([me.x, me.z]); }
+  const pts = outline ? { x: outline.x, z: outline.z } : { x: trail.map((p) => p[0]), z: trail.map((p) => p[1]) };
+  const base = $("livemap"), ov = $("livemap-ov");
+  $("map-note").textContent = outline ? "live positions · you = white" : trail.length > 30 ? "drawing the track as you drive…" : "the track appears as you drive";
+  const key = `${base.clientWidth}x${base.clientHeight}:${outline ? "o" : Math.floor(trail.length / 40)}`;
+  if (key !== mapKey && pts.x.length > 30) {
+    mapKey = key;
+    const { g, w, h } = fitCanvas(base, base.clientHeight);
+    mapT = mapTransform(pts, w, h, 22);
+    g.lineCap = "round"; g.lineJoin = "round";
+    const path = () => { g.beginPath(); pts.x.forEach((x, i) => { const [a, b] = mapT(x, pts.z[i]); i ? g.lineTo(a, b) : g.moveTo(a, b); }); if (outline) g.closePath(); };
+    g.strokeStyle = "#2a2e37"; g.lineWidth = 12; path(); g.stroke();
+    g.strokeStyle = "#3a3f4a"; g.lineWidth = 2; path(); g.stroke();
+    if (outline) { const [sx, sy] = mapT(pts.x[0], pts.z[0]); g.fillStyle = "#f0efec"; g.fillRect(sx - 2, sy - 8, 4, 16); }
+  }
+  const { g } = fitCanvas(ov, ov.clientHeight);
+  if (!mapT) return;
+  const near = me ? [me.pos - 1, me.pos + 1] : [];
+  const cars = s.timing.filter((r) => r.x != null && !r.out).sort((a, b) => (a.me - b.me) || (b.pos - a.pos));
+  g.textAlign = "center"; g.font = "800 9px Saira Semi Condensed, sans-serif";
+  for (const r of cars) {
+    const [a, b] = mapT(r.x, r.z), R = r.me ? 9 : near.includes(r.pos) ? 8 : 6.5;
+    g.beginPath(); g.arc(a, b, R, 0, 7); g.fillStyle = r.me ? "#f0efec" : teamCol(r.team); g.fill();
+    g.lineWidth = r.me ? 3 : 1.5; g.strokeStyle = r.me ? css("--accent") : "#0d0f13"; g.stroke();
+    g.fillStyle = "#0b0c0f"; g.fillText(r.pos, a, b + 0.5);
+  }
+}
+
 function addRadio(ev) {
+  const when = ev.t ? new Date(ev.t * 1000) : new Date();
+  const ts = when.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   for (const box of [$("radio-live"), $("radio-all")]) {
     const d = document.createElement("div");
-    d.className = "msg " + (ev.role || "engineer"); d.textContent = ev.text;
-    box.appendChild(d); while (box.children.length > 200) box.removeChild(box.firstChild);
-    box.scrollTop = box.scrollHeight;
+    d.className = "msg " + (ev.role || "engineer");
+    d.innerHTML = `<time>${ev.role === "driver" ? "You" : "Engineer"} · ${ts}</time>${esc(ev.text)}`;
+    const rev = box.classList.contains("rev");
+    if (rev) box.prepend(d); else box.appendChild(d);
+    while (box.children.length > 200) box.removeChild(rev ? box.lastChild : box.firstChild);
+    if (!rev) box.scrollTop = box.scrollHeight;
   }
 }
 function connect() {
@@ -120,15 +266,17 @@ function connect() {
   };
   ws.onclose = () => { $("dot").classList.remove("on"); $("conn-t").textContent = "reconnecting"; setTimeout(connect, 1500); };
 }
-$("chatform").onsubmit = async (e) => {
-  e.preventDefault(); const q = $("q").value.trim(); if (!q) return; $("q").value = "";
+async function ask(q) {
   if (OFFLINE) addRadio({ role: "driver", text: q });
   const th = document.createElement("div"); th.className = "msg thinking"; th.textContent = "…"; $("radio-all").appendChild(th);
   try {
     const r = await (await fetch("/api/ask", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ q }) })).json();
     if (OFFLINE) addRadio({ role: "engineer", text: r.answer });
   } catch (err) { addRadio({ role: "engineer", text: "Radio's down: " + err }); } finally { th.remove(); }
-};
+}
+for (const [form, input] of [["chatform", "q"], ["askform", "ask"]]) {
+  $(form).onsubmit = (e) => { e.preventDefault(); const q = $(input).value.trim(); if (!q) return; $(input).value = ""; ask(q); };
+}
 
 // ---------------------------------------------------------------- memory
 async function loadMemory() {
@@ -196,7 +344,7 @@ async function toggleLap(id) {
     const used = new Set(SEL.map((s) => s.slot));
     SEL.push({ id, slot: [0, 1, 2].find((k) => !used.has(k)) });
   }
-  history.replaceState(null, "", "#telemetry?laps=" + SEL.map((s) => s.id).join(","));
+  if (TAB === "laps") history.replaceState(null, "", "#laps?laps=" + SEL.map((s) => s.id).join(","));
   renderLapList(); await drawTelemetry();
 }
 async function getLap(id) {
@@ -242,7 +390,6 @@ async function drawTelemetry() {
   BASE = LAPSD.reduce((b, l) => !b || l.lap_time < b.lap_time ? l : b, null);   // the fastest is the baseline
   X = BASE.trace.dist; SEG = segments(BASE);
   const meta = LAPS.find((l) => l.id === BASE.id) || {};
-  if (OFFLINE) { $("h-track").textContent = meta.track || "-"; $("h-mode").textContent = meta.type || "-"; $("h-input").textContent = BASE.input || "-"; }
   drawCmpbar(); drawSummary(); drawMinis(); drawCharts(); drawCorners(); drawMap(); cursorAt(null); drawGG(); drawNotes();
 }
 function drawCmpbar() {
@@ -389,7 +536,7 @@ function drawNotes() {
 }
 
 // ---- track map: correct handedness (game z points down the screen) and rotated to fit the panel
-let mapBase = null, mapGeo = null, MAPMODE = "speed";
+let mapGeo = null, MAPMODE = "speed";
 document.querySelectorAll("#mapmode button").forEach((b) => b.onclick = () => {
   MAPMODE = b.dataset.m; document.querySelectorAll("#mapmode button").forEach((x) => x.classList.toggle("on", x === b)); drawMap(); cursorAt(null);
 });
@@ -411,8 +558,8 @@ function ramp(v) {   // one-hue sequential ramp (slow = deep blue, fast = pale)
   const a = stops[i], b = stops[i + 1]; return `rgb(${a.map((c, k) => Math.round(c + (b[k] - c) * f)).join(",")})`;
 }
 function drawMap() {
-  const c = $("map"); if (!BASE || !BASE.trace.x) { mapBase = null; return; }
-  const { g, w, h } = fitCanvas(c, (c.clientWidth || 400) / 1.35), t = BASE.trace;
+  const c = $("map"); if (!BASE || !BASE.trace.x) { mapGeo = null; fitCanvas(c, c.clientHeight); return; }
+  const { g, w, h } = fitCanvas(c, c.clientHeight), t = BASE.trace;
   const P = mapTransform(t, w, h, 26); mapGeo = { P };
   g.lineCap = "round"; g.lineJoin = "round";
   g.strokeStyle = "#262a32"; g.lineWidth = 12; g.beginPath(); t.x.forEach((x, i) => { const [a, b] = P(x, t.z[i]); i ? g.lineTo(a, b) : g.moveTo(a, b); }); g.stroke();
@@ -441,11 +588,9 @@ function drawMap() {
   g.fillStyle = "#a9adb6"; g.textAlign = "center"; g.font = "600 11px Titillium Web, sans-serif";
   SEG.forEach((s) => { const i = nearestIdx(s.apex, X), [a, b] = P(t.x[i], t.z[i]); g.fillText(s.name, a, b - 11); });
   $("maplegend").innerHTML = legend;
-  mapBase = g.getImageData(0, 0, c.width, c.height);
 }
 function cursorAt(idx) {
-  const c = $("map"), g = c.getContext("2d");
-  if (mapBase) { g.setTransform(1, 0, 0, 1, 0, 0); g.putImageData(mapBase, 0, 0); g.setTransform(devicePixelRatio || 1, 0, 0, devicePixelRatio || 1, 0, 0); }
+  const ov = $("map-ov"), { g } = fitCanvas(ov, ov.clientHeight);   // overlay: cleared every time
   if (idx == null || !BASE || !mapGeo) { $("readout").innerHTML = '<div style="grid-column:1/-1"><small>Hover the charts to scrub the lap</small></div>'; return; }
   const d = X[idx];
   LAPSD.forEach((l) => {
@@ -474,31 +619,39 @@ function drawGG() {
     for (let i = 0; i < l.trace.glat.length; i++) { const a = l.trace.glat[i], b = l.trace.glon[i]; if (Math.abs(a) <= m && Math.abs(b) <= m) g.fillRect(cx + a * S - 1, cy - b * S - 1, 2.2, 2.2); } });
 }
 function resizeAll() { if (!SEL.length) return; const w = Math.max(320, $("charts").clientWidth); plots.forEach((p) => p.setSize({ width: w, height: p.height })); drawMap(); cursorAt(null); drawGG(); }
-window.addEventListener("resize", () => { resizeAll(); if (!$("tab-timing").classList.contains("hidden")) drawTiming(); });
+window.addEventListener("resize", () => { resizeAll(); if (TAB === "sessions") drawSession(); if (TAB === "live") { mapKey = null; drawLiveMap(); } });
 
 // ---------------------------------------------------------------- timing
 function fillSessionSelects() {
   const opt = (s) => `<option value="${esc(s.id)}">${esc(s.track)} · ${esc(s.type)} · ${sessDate(s.created)}</option>`;
-  const ts = $("timing-session"), rs = $("race-session"), curT = ts.value, curR = rs.value;
+  const ts = $("timing-session"), curT = ts.value;
   ts.innerHTML = SESSIONS.map(opt).join(""); if (curT) ts.value = curT;
-  const races = SESSIONS.filter((s) => (s.type || "").startsWith("Race"));
-  rs.innerHTML = races.map(opt).join(""); if (curR) rs.value = curR;
 }
-$("timing-session").onchange = () => drawTiming();
-$("race-session").onchange = () => drawRace();
+$("timing-session").onchange = () => drawSession();
+function drawSession() {
+  const s = SESSIONS.find((x) => x.id === $("timing-session").value) || SESSIONS[0];
+  $("sess-empty").classList.toggle("hidden", !!s); $("sess-content").classList.toggle("hidden", !s);
+  if (!s) return;
+  const mine = s.laps.filter((l) => l.car === "Player" && l.lap_time > 0), best = mine.reduce((b, l) => Math.min(b, l.lap_time), 1e9);
+  $("sess-sum").textContent = `${mine.length} laps · best ${fmt(best < 1e9 ? best : 0)}`;
+  drawTiming();
+  const race = (s.type || "").startsWith("Race");
+  $("race-content").classList.toggle("hidden", !race);
+  if (race) drawRace(s.id);
+}
 async function drawTiming() {
   const s = SESSIONS.find((x) => x.id === $("timing-session").value) || SESSIONS[0]; if (!s) return;
   const laps = s.laps.filter((l) => l.car === "Player" && l.lap_time > 0).sort((a, b) => a.lap - b.lap || a.id - b.id);
   const sc = sectorClasses(laps), best = Math.min(...laps.map((l) => l.lap_time));
-  const withS = laps.filter((l) => l.sectors), bestS = [0, 1, 2].map((k) => Math.min(...withS.map((l) => l.sectors[k])));
+  const withS = laps.filter((l) => l.sectors && l.sectors.every((v) => v > 0)), bestS = [0, 1, 2].map((k) => Math.min(...withS.map((l) => l.sectors[k])));
   $("timing").innerHTML = `<thead><tr><th>Lap</th><th>Time</th><th>Gap</th><th>S1</th><th>S2</th><th>S3</th><th>Tyre</th><th>Input</th><th>Status</th></tr></thead><tbody>` +
     laps.map((l) => `<tr data-id="${l.id}" style="cursor:pointer"><td class="lapn">L${l.lap}</td>
       <td class="${l.lap_time === best ? "p" : ""}">${fmt(l.lap_time)}</td><td class="muted">${l.lap_time === best ? "-" : sgn(l.lap_time - best)}</td>
-      ${[0, 1, 2].map((k) => `<td class="${sc.get(l.id)?.[k] || "muted"}">${l.sectors ? (l.sectors[k] / 1000).toFixed(3) : "-"}</td>`).join("")}
+      ${[0, 1, 2].map((k) => `<td class="${l.sectors && l.sectors[k] > 0 ? sc.get(l.id)?.[k] || "muted" : "muted"}">${l.sectors && l.sectors[k] > 0 ? (l.sectors[k] / 1000).toFixed(3) : "-"}</td>`).join("")}
       <td>${tyreBadge(l.compound, l.tyre_age)}${l.tyre_age != null ? ` <small>${l.tyre_age}</small>` : ""}</td>
       <td class="muted">${esc(l.input || "-")}</td><td class="${l.valid ? "" : "slower"}">${l.valid ? "valid" : "deleted"}</td></tr>`).join("") +
     (withS.length ? `<tr class="ideal"><td>Ideal</td><td>${fmt(bestS.reduce((a, b) => a + b, 0) / 1000)}</td><td class="muted">${sgn(bestS.reduce((a, b) => a + b, 0) / 1000 - best)}</td>${bestS.map((v) => `<td>${(v / 1000).toFixed(3)}</td>`).join("")}<td colspan="3" class="muted" style="text-align:left;font:400 12px var(--font)">best three sectors combined</td></tr>` : "") + "</tbody>";
-  document.querySelectorAll("#timing tbody tr[data-id]").forEach((tr) => tr.onclick = () => { SEL = []; toggleLap(+tr.dataset.id); document.querySelector('#tabs button[data-tab="telemetry"]').click(); });
+  document.querySelectorAll("#timing tbody tr[data-id]").forEach((tr) => tr.onclick = async () => { SEL = []; await toggleLap(+tr.dataset.id); goTab("laps"); });
   // lap-time progression, markers show the tyre
   { const { g, w, h } = fitCanvas($("c-laps")), pad = 52;
     if (laps.length) {
@@ -533,14 +686,14 @@ async function drawTiming() {
 
 // ---------------------------------------------------------------- race
 let racePlots = [];
-async function drawRace() {
+async function drawRace(id) {
   racePlots.forEach((p) => p.destroy()); racePlots = [];
   ["r-pos", "r-gap", "r-laps", "r-stints", "r-wear"].forEach((id) => $(id).innerHTML = "");
-  const id = $("race-session").value, rows = id ? await (await fetch("/api/race/" + encodeURIComponent(id))).json() : [];
-  $("race-empty").classList.toggle("hidden", rows.length > 0); $("race-content").classList.toggle("hidden", !rows.length);
+  const rows = id ? await (await fetch("/api/race/" + encodeURIComponent(id))).json() : [];
+  $("race-content").classList.toggle("hidden", !rows.length);
   if (!rows.length) return;
   const laps = rows.map((r) => r.lap), w = () => Math.max(320, $("r-pos").clientWidth);
-  const ax = (yl) => [{ stroke: AXIS, grid: { stroke: GRID }, ticks: { stroke: GRID }, font: "11px Titillium Web", values: (u, v) => v.map((x) => "L" + x) },
+  const ax = (yl) => [{ stroke: AXIS, grid: { stroke: GRID }, ticks: { stroke: GRID }, font: "11px Titillium Web", values: (u, v) => v.map((x) => Number.isInteger(x) ? "L" + x : "") },
     { stroke: AXIS, grid: { stroke: GRID }, ticks: { stroke: GRID }, font: "11px Titillium Web", size: 46, label: yl, labelSize: 14 }];
   const mk = (el, series, data, h, y = {}, yl = "") => racePlots.push(new uPlot({ width: w(), height: h, legend: { show: false },
     series: [{}, ...series], axes: ax(yl), scales: { x: { time: false }, y }, cursor: { sync: { key: "race" } } }, data, $(el)));
@@ -570,9 +723,10 @@ connect();
 (async () => {
   let st = {}; try { st = await (await fetch("/api/state")).json(); renderState(st); } catch {}
   await loadLaps();
-  const [tab, qs] = (location.hash.slice(1) || (st.offline ? "telemetry" : "live")).split("?");
+  let [tab, qs] = (location.hash.slice(1) || (st.offline ? "laps" : "live")).split("?");
+  tab = { telemetry: "laps", race: "sessions" }[tab] || tab;     // old links
   const q = new URLSearchParams(qs || "");
-  showTab(TABS.includes(tab) ? tab : "telemetry");
+  showTab(TABS.includes(tab) ? tab : "live");
   const ids = (q.get("laps") || "").split(",").filter(Boolean).map(Number);
   if (ids.length) { for (const id of ids) await toggleLap(id); }
   else if (LAPS.length) {

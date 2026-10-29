@@ -943,12 +943,95 @@ class Engine:
         }
 
     # ---- dashboard state -----------------------------------------------------------
+    def timing(self) -> list[dict]:
+        """Live timing tower: every running car, in position order (cached 0.5 s; gaps are the real race gaps)."""
+        now = time.time()
+        if now - getattr(self, "_timing_t", 0) < 0.5:
+            return self._timing_cache
+        tr = self.tr
+        rows: list[dict] = []
+        if tr.lapdata is not None:
+            motion = getattr(tr, "motion_all", None)
+            by_pos = {}
+            for i in range(22):
+                L = tr.lapdata[i]
+                pos = int(L["carPosition"])
+                if pos == 0 or int(L["resultStatus"]) < 2 or i >= len(tr.participants):
+                    continue
+                by_pos[pos] = i
+                st = tr.status[i] if tr.status and tr.status[i] else {}
+                part = tr.participants[i]
+                row = {"idx": i, "pos": pos, "name": tr.car_name(i), "team": part.get("team"), "number": part.get("number"),
+                       "me": i == tr.player_idx, "lap": int(L["currentLapNum"]), "sector": int(L["sector"]),
+                       "last": round(float(L["lastLapTime"]), 3), "best": round(float(L["bestLapTime"]), 3),
+                       "s1": int(L["sector1TimeInMS"]), "s2": int(L["sector2TimeInMS"]),
+                       "pit": int(L["pitStatus"]), "pen": int(L["penalties"]), "out": int(L["resultStatus"]) > 3,
+                       "done": int(L["resultStatus"]) == 3,
+                       "tyre": P.VISUAL_COMPOUND.get(st.get("visualTyreCompound"), None) if st else None,
+                       "tyre_age": st.get("tyresAgeLaps") if st else None}
+                if motion is not None:
+                    row["x"], row["z"] = round(float(motion[i]["worldPositionX"]), 1), round(float(motion[i]["worldPositionZ"]), 1)
+                rows.append(row)
+            rows.sort(key=lambda r: r["pos"])
+            leader = by_pos.get(1)
+            if tr.is_race:
+                for r in rows:
+                    ahead = by_pos.get(r["pos"] - 1)
+                    g = None if leader is None or r["idx"] == leader else self.gaps.gap(r["idx"], leader)
+                    iv = None if ahead is None else self.gaps.gap(r["idx"], ahead)
+                    r["gap"] = None if g is None else round(g, 3)
+                    r["int"] = None if iv is None else round(iv, 3)
+            else:            # practice / quali / TT: the order and gaps are best laps
+                best = min((r["best"] for r in rows if r["best"] > 0), default=0)
+                prev = None
+                for r in sorted(rows, key=lambda r: (r["best"] <= 0, r["best"])):
+                    r["gap"] = round(r["best"] - best, 3) if r["best"] > 0 and best else None
+                    r["int"] = round(r["best"] - prev, 3) if r["best"] > 0 and prev else None
+                    prev = r["best"] if r["best"] > 0 else prev
+        self._timing_t, self._timing_cache = now, rows
+        return rows
+
+    def _player_sectors(self, L) -> dict:
+        """Current, last-lap and best sector times of the player (s), kept across dashboard reloads."""
+        st = getattr(self, "_sect", None)
+        lap, s1, s2 = int(L["currentLapNum"]), int(L["sector1TimeInMS"]) / 1000, int(L["sector2TimeInMS"]) / 1000
+        if st is None or st["uid"] != self.tr.session_uid:
+            st = self._sect = {"uid": self.tr.session_uid, "lap": lap, "s1": 0.0, "s2": 0.0, "last": [0, 0, 0], "best": [0, 0, 0]}
+        if lap == st["lap"] + 1 and st["s1"] and st["s2"] and float(L["lastLapTime"]) > 0:
+            last = [st["s1"], st["s2"], round(float(L["lastLapTime"]) - st["s1"] - st["s2"], 3)]
+            st["last"] = last
+            st["best"] = [v if v > 0 and (not b or v < b) else b for v, b in zip(last, st["best"])]
+        if lap != st["lap"]:
+            st.update(lap=lap, s1=0.0, s2=0.0)
+        sec, now = int(L["sector"]), float(L["currentLapTime"])
+        if not s1 and sec >= 1 and not st["s1"] and st.get("sec") == 0:      # the game left it empty: time it ourselves
+            s1 = round(now, 3)
+        if not s2 and sec == 2 and not st["s2"] and st.get("sec") == 1 and st["s1"]:
+            s2 = round(now - st["s1"], 3)
+        st["sec"] = sec
+        st["s1"], st["s2"] = s1 or st["s1"], s2 or st["s2"]
+        return {"sector": int(L["sector"]), "now": [st["s1"], st["s2"]], "last": st["last"], "best": st["best"]}
+
+    def track_outline(self) -> dict:
+        """The track's centre line for the live map (from the first clean lap, or the reference lap)."""
+        tm = self.tr.trackmap
+        if tm is not None:
+            x, z = tm.x, tm.z
+        elif self.ref and "x" in self.ref["rs"]:
+            x, z = self.ref["rs"]["x"], self.ref["rs"]["z"]
+        else:
+            return {"track": self.tr.track, "x": [], "z": []}
+        step = max(1, len(x) // 600)
+        return {"track": self.tr.track, "x": np.round(np.asarray(x)[::step], 1).tolist(),
+                "z": np.round(np.asarray(z)[::step], 1).tolist()}
+
     def live_state(self) -> dict:
         tr = self.tr
         s = {"connected": time.time() - tr.last_packet_wall < 3, "track": tr.track if tr.session else None, "game": self.game,
              "adapt": self.adapt,
              "mode": tr.session_type if tr.session else None, "input_device": self.input_device, "stats": self.stats,
              "reference": None if not self.ref else {"label": self.ref["label"], "time": self.ref["time"]}}
+        L = None
         if tr.telemetry is not None and tr.lapdata is not None:
             T, L = tr.telemetry[tr.player_idx], tr.lapdata[tr.player_idx]
             s["car"] = {"speed": int(T["speed"]), "gear": int(T["gear"]), "throttle": round(float(T["throttle"]), 2),
@@ -973,6 +1056,15 @@ class Engine:
                            "abs": st.get("antiLockBrakes")}
         if tr.is_race:
             s["race"] = self.race
+        if tr.session:
+            s["session"] = {"lap_total": int(tr.session.get("totalLaps") or 0), "is_race": tr.is_race,
+                            "weather": P.WEATHER.get(tr.session.get("weather", 0), "?"),
+                            "track_temp": tr.session.get("trackTemperature"), "air_temp": tr.session.get("airTemperature"),
+                            "safety_car": P.SAFETY_CAR.get(tr.session.get("safetyCarStatus", 0), "none"),
+                            "track_length": tr.session.get("trackLength")}
+            if L is not None:
+                s["sectors"] = self._player_sectors(L)
+        s["timing"] = self.timing()
         if self.reports:
             s["last_report"] = self.reports[-1].to_dict()
         s["advice"] = self.advice

@@ -91,6 +91,10 @@ def create_app(engine) -> FastAPI:
     def state():
         return engine.live_state()
 
+    @app.get("/api/track")
+    def track():
+        return engine.track_outline() if hasattr(engine, "track_outline") else {"x": [], "z": []}
+
     @app.get("/api/laps")
     def laps():
         return engine.store.list_laps()

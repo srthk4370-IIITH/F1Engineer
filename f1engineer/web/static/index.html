@@ -7,23 +7,25 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Titillium+Web:wght@400;600;700&family=Saira+Semi+Condensed:wght@500;600;700;800&display=swap">
 <link rel="stylesheet" href="/static/vendor/uPlot.min.css">
-<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/style.css?v=4">
 </head>
 <body>
 <header class="top">
   <div class="brand"><i class="slash"></i><span>F1</span><b>ENGINEER</b></div>
-  <div class="ctx">
-    <span class="pill" id="conn"><i id="dot" class="dot"></i><span id="conn-t">offline</span></span>
-    <span class="kv"><small>Game</small><b id="h-game">-</b></span>
+  <span class="pill" id="conn"><i id="dot" class="dot"></i><span id="conn-t">connecting</span></span>
+  <div class="strip" id="strip">
     <span class="kv"><small>Track</small><b id="h-track">-</b></span>
     <span class="kv"><small>Session</small><b id="h-mode">-</b></span>
-    <span class="kv"><small>Input</small><b id="h-input">-</b></span>
+    <span class="kv"><small>Lap</small><b id="h-lap">-</b></span>
+    <span class="kv"><small>Weather</small><b id="h-weather">-</b></span>
+    <span class="kv"><small>Track / air</small><b id="h-temp">-</b></span>
+    <span class="kv hidden" id="h-sc-wrap"><b id="h-sc" class="sc">SAFETY CAR</b></span>
   </div>
   <nav id="tabs">
-    <button data-tab="telemetry">Telemetry</button>
-    <button data-tab="timing">Timing</button>
-    <button data-tab="race">Race</button>
     <button data-tab="live">Live</button>
+    <button data-tab="timing">Timing</button>
+    <button data-tab="laps">Lap analysis</button>
+    <button data-tab="sessions">Sessions</button>
     <button data-tab="engineer">Engineer</button>
   </nav>
 </header>
@@ -31,8 +33,71 @@
 <main>
   <div id="importing" class="banner hidden"></div>
 
-  <!-- ============ TELEMETRY: multi-lap comparison ============ -->
-  <section id="tab-telemetry" class="hidden">
+  <!-- ============ LIVE: what matters right now ============ -->
+  <section id="tab-live" class="hidden">
+    <div id="live-wait" class="empty hidden">
+      <h2 id="wait-h">Waiting for the game</h2>
+      <p id="wait-p">Live data starts once a session has loaded (garage or on track). In the game: Settings &gt; Telemetry, UDP on, port 20777, format 2020.</p>
+    </div>
+    <div id="live-grid" class="live">
+      <aside class="card tower-card">
+        <div class="card-h">Timing <small id="tower-note"></small></div>
+        <div id="tower" class="tower"></div>
+      </aside>
+
+      <div class="live-mid">
+        <div class="hero">
+          <div class="hero-pos"><small>Position</small><b id="pos">-</b><span id="pos-sub" class="muted"></span></div>
+          <div class="hero-delta"><small id="delta-l">Delta to best</small><b id="delta">-</b><span id="laptime" class="muted"></span></div>
+          <div class="hero-sec"><small>Sectors <span id="sec-note"></span></small><div class="secs3" id="secs"></div></div>
+        </div>
+        <div class="battle" id="battle"></div>
+        <div class="card map-card">
+          <div class="card-h">Track <small id="map-note"></small></div>
+          <div class="mapwrap" id="livemapwrap"><canvas id="livemap"></canvas><canvas id="livemap-ov" class="ov"></canvas></div>
+        </div>
+      </div>
+
+      <aside class="live-side">
+        <div class="card">
+          <div class="carline"><div><span class="big" id="speed">0</span> <small>km/h</small></div><div class="gearbox" id="gear">N</div></div>
+          <div class="pedal"><small>Throttle</small><div class="bar"><div id="thr" class="thr"></div></div></div>
+          <div class="pedal"><small>Brake</small><div class="bar"><div id="brk" class="brk"></div></div></div>
+          <div class="tyres" id="tyres"></div>
+          <div class="kvs">
+            <div><small>Tyre</small><b id="compound">-</b></div>
+            <div><small>Fuel at flag</small><b id="fuel">-</b></div>
+            <div><small>ERS</small><b id="ers">-</b></div>
+            <div><small>TC / ABS</small><b id="aids">-</b></div>
+          </div>
+        </div>
+        <div class="card radio-card">
+          <div class="card-h">Radio <small>newest first</small></div>
+          <form class="chat" id="askform"><input id="ask" placeholder="Ask Bono…" autocomplete="off"><button>Ask</button></form>
+          <div id="radio-live" class="radio rev"></div>
+        </div>
+      </aside>
+    </div>
+
+    <div id="live-more" class="live-more">
+      <div class="card"><div class="card-h">Last lap <small id="report-h"></small></div><div id="report" class="tablewrap sub">No analysed lap yet.</div></div>
+      <div class="card" id="advice-card"><div class="card-h">Setup suggestions <small>from your laps</small></div><ul id="advice" class="advice sub"><li>Drive a few laps.</li></ul></div>
+      <div class="card" id="plan-card"><div class="card-h">Practice plan <small id="plan-goal"></small></div><div id="plan" class="sub">No plan running. Ask: "give me a practice plan".</div></div>
+    </div>
+  </section>
+
+  <!-- ============ TIMING: the full tower ============ -->
+  <section id="tab-timing" class="hidden">
+    <div id="timing-wait" class="empty hidden"><h2>No live session</h2>
+      <p>Live timing appears while the game is running. Past sessions are under <a href="#sessions" data-go="sessions">Sessions</a>.</p></div>
+    <div class="card" id="timing-card">
+      <div class="card-h">Live timing <small id="ft-note"></small></div>
+      <div class="tablewrap"><table id="fulltower" class="grid-table tower-full"></table></div>
+    </div>
+  </section>
+
+  <!-- ============ LAP ANALYSIS: compare up to 3 laps ============ -->
+  <section id="tab-laps" class="hidden">
     <div class="tele">
       <aside class="laps-panel">
         <div class="panel-h">Laps <small>pick up to 3 on the same track</small></div>
@@ -42,7 +107,7 @@
         <div id="cmpbar" class="cmpbar"></div>
         <div id="tele-empty" class="empty">
           <h2>Pick a lap</h2>
-          <p>Choose up to three laps on the left to overlay them. The fastest one is the baseline for the delta.</p>
+          <p>Choose up to three laps on the left to overlay them. The fastest one is the baseline for the gap.</p>
         </div>
         <div id="tele-content" class="hidden">
           <div class="card">
@@ -64,7 +129,7 @@
                 <div class="card-h">Track <span class="seg" id="mapmode">
                   <button data-m="speed" class="on">Speed</button><button data-m="gear">Gear</button>
                   <button data-m="pedals">Pedals</button><button data-m="fastest">Fastest</button></span></div>
-                <canvas id="map"></canvas>
+                <div class="mapwrap"><canvas id="map"></canvas><canvas id="map-ov" class="ov"></canvas></div>
                 <div id="maplegend" class="maplegend"></div>
                 <div id="readout" class="readout"></div>
               </div>
@@ -72,13 +137,13 @@
                 <div class="card-h">Corners <small>click a row to zoom</small></div>
                 <div class="tablewrap"><table id="corners" class="grid-table corners"></table></div>
               </div>
-              <div class="card">
-                <div class="card-h">G-G <small>grip used</small></div>
-                <canvas id="gg" class="sq"></canvas>
-              </div>
               <div class="card" id="notes-card">
                 <div class="card-h">Engineer's notes <small id="notes-for"></small></div>
                 <div id="notes" class="notes"></div>
+              </div>
+              <div class="card">
+                <div class="card-h">G-G <small>grip used</small></div>
+                <canvas id="gg" class="sq"></canvas>
               </div>
             </div>
           </div>
@@ -87,60 +152,31 @@
     </div>
   </section>
 
-  <!-- ============ TIMING ============ -->
-  <section id="tab-timing" class="hidden">
-    <div class="toolbar"><label>Session <select id="timing-session"></select></label></div>
-    <div class="timing-grid">
-      <div class="card">
-        <div class="card-h">Lap times <small>purple = session best · green = personal improvement</small></div>
-        <div class="tablewrap"><table id="timing" class="grid-table timing"></table></div>
+  <!-- ============ SESSIONS: history ============ -->
+  <section id="tab-sessions" class="hidden">
+    <div class="toolbar"><label>Session <select id="timing-session"></select></label><small id="sess-sum"></small></div>
+    <div id="sess-empty" class="empty hidden"><h2>No sessions yet</h2><p>Drive with the game running and your laps show up here.</p></div>
+    <div id="sess-content">
+      <div class="timing-grid">
+        <div class="card">
+          <div class="card-h">Lap times <small>purple = session best · green = improvement · click a lap to analyse it</small></div>
+          <div class="tablewrap"><table id="timing" class="grid-table timing"></table></div>
+        </div>
+        <div class="card">
+          <div class="card-h">Lap time progression <small>ring colour = tyre</small></div>
+          <canvas id="c-laps" data-h="230"></canvas>
+        </div>
+      </div>
+      <div id="race-content" class="race-grid hidden">
+        <div class="card"><div class="card-h">Position</div><div id="r-pos"></div></div>
+        <div class="card"><div class="card-h">Gaps <small>to the cars ahead and behind, s</small></div><div id="r-gap"></div></div>
+        <div class="card"><div class="card-h">Lap times</div><div id="r-laps"></div></div>
+        <div class="card"><div class="card-h">Tyres <small>stints and wear</small></div><div id="r-stints"></div><div id="r-wear"></div></div>
       </div>
       <div class="card">
-        <div class="card-h">Lap time progression <small>marker = tyre</small></div>
-        <canvas id="c-laps" data-h="230"></canvas>
+        <div class="card-h">Mini-sectors <small id="ms-note">segment times, purple = best of the session</small></div>
+        <div class="tablewrap"><table id="minisectors" class="grid-table ms"></table></div>
       </div>
-    </div>
-    <div class="card">
-      <div class="card-h">Mini-sectors <small id="ms-note">segment times, purple = best of the session</small></div>
-      <div class="tablewrap"><table id="minisectors" class="grid-table ms"></table></div>
-    </div>
-  </section>
-
-  <!-- ============ RACE ============ -->
-  <section id="tab-race" class="hidden">
-    <div class="toolbar"><label>Race <select id="race-session"></select></label></div>
-    <div id="race-empty" class="empty hidden"><h2>No race recorded yet</h2>
-      <p>Race sessions appear here with position, gaps, lap times and tyre stints lap by lap.</p></div>
-    <div id="race-content" class="race-grid">
-      <div class="card"><div class="card-h">Position</div><div id="r-pos"></div></div>
-      <div class="card"><div class="card-h">Gaps <small>to the cars ahead and behind, s</small></div><div id="r-gap"></div></div>
-      <div class="card"><div class="card-h">Lap times</div><div id="r-laps"></div></div>
-      <div class="card"><div class="card-h">Tyres <small>stints and wear</small></div><div id="r-stints"></div><div id="r-wear"></div></div>
-    </div>
-  </section>
-
-  <!-- ============ LIVE ============ -->
-  <section id="tab-live" class="hidden">
-    <div id="liveoff" class="empty hidden"><h2>Engineer offline</h2>
-      <p>Live data appears when the game is running. Meanwhile, review your laps under Telemetry.</p></div>
-    <div class="live-grid">
-      <div class="card hero"><div class="card-h">Delta</div><div id="delta" class="big">-</div><div id="lapinfo" class="sub">waiting for the game…</div></div>
-      <div class="card"><div class="card-h">Car</div>
-        <div class="carline"><div><span class="big" id="speed">0</span> <small>km/h</small></div><div class="gearbox" id="gear">N</div></div>
-        <div class="revbar"><div id="rev"></div></div>
-        <div class="pedal"><small>Throttle</small><div class="bar"><div id="thr" class="thr"></div></div></div>
-        <div class="pedal"><small>Brake</small><div class="bar"><div id="brk" class="brk"></div></div></div></div>
-      <div class="card"><div class="card-h">Tyres <small id="compound"></small></div><div class="tyres" id="tyres"></div></div>
-      <div class="card"><div class="card-h">Energy</div><div class="kvs">
-        <div><small>Fuel margin</small><b id="fuel">-</b></div><div><small>ERS</small><b id="ers">-</b></div>
-        <div><small>TC</small><b id="tc">-</b></div><div><small>ABS</small><b id="abs">-</b></div></div>
-        <div id="racebox" class="sub"></div></div>
-    </div>
-    <div class="live-grid wide">
-      <div class="card"><div class="card-h">Last lap</div><div id="report" class="tablewrap sub">No analysed lap yet.</div></div>
-      <div class="card"><div class="card-h">Practice plan <small id="plan-goal"></small></div><div id="plan" class="sub">No plan running. Ask your engineer: "give me a practice plan".</div></div>
-      <div class="card"><div class="card-h">Suggestions</div><ul id="advice" class="advice sub"><li>Drive a few laps.</li></ul></div>
-      <div class="card"><div class="card-h">Radio</div><div id="radio-live" class="radio"></div></div>
     </div>
   </section>
 
@@ -149,12 +185,12 @@
     <div class="card chat-card"><div class="card-h">Talk to your engineer</div>
       <div id="radio-all" class="radio tall"></div>
       <form class="chat" id="chatform"><input id="q" placeholder="Am I improving? What setup should I change? Debrief my last lap…" autocomplete="off"><button>Send</button></form>
-      <div class="sub">In the car: say "Hey Bono" or hold Shift / right-stick. Commands: "say again", "stop", "quiet", "radio on".</div></div>
+      <div class="sub">In the car: say "Hey Bono" or hold your push-to-talk key. Commands: "say again", "stop", "quiet", "radio on".</div></div>
     <div class="card"><div class="card-h">What your engineer remembers <small>preferences are soft: he follows them, and says so once if the data disagrees</small></div>
       <div id="memory" class="memory"></div></div>
   </section>
 </main>
 <script src="/static/vendor/uPlot.iife.min.js"></script>
-<script src="/static/app.js"></script>
+<script src="/static/app.js?v=4"></script>
 </body>
 </html>
