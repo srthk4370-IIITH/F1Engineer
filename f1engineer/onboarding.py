@@ -142,7 +142,18 @@ def main() -> None:
     try:
         import sounddevice as sd
         from f1engineer.speech import input_devices
-        print(f"  Speakers (Windows default): {sd.query_devices(kind='output')['name']}")
+        spk_default = sd.query_devices(kind="output")["name"]
+        spks = input_devices("output")
+        print("  Speakers / headsets (the engineer's voice):")
+        for i, m in enumerate(spks, 1):
+            print(f"    {i}. {m}{'   <- Windows default' if m == spk_default else ''}")
+        print("  Tip: pick the headset your game sound plays on, or you may not hear him over the game.")
+        cur = env.get("F1E_SPEAKER", "")
+        pick = _ask("  Which one? (number, Enter = " + (f"keep '{cur}'" if cur else "Windows default") + ")", "")
+        if pick.isdigit() and 1 <= int(pick) <= len(spks):
+            env["F1E_SPEAKER"] = spks[int(pick) - 1]
+            _write_env(env)
+        print(f"  Using: {env.get('F1E_SPEAKER') or spk_default}")
         mics = input_devices()
         default = sd.query_devices(kind="input")["name"]
         print("  Microphones:")

@@ -225,13 +225,13 @@ class STT:
         return " ".join(s.text.strip() for s in segs).strip()
 
 
-def input_devices() -> list[str]:
-    """Microphone names (MME host API: it resamples to our 16 kHz on any device), without duplicates."""
+def input_devices(kind: str = "input") -> list[str]:
+    """Microphone (or speaker) names (MME host API: it resamples to our rate on any device), without duplicates."""
     import sounddevice as sd
     mme = next((i for i, h in enumerate(sd.query_hostapis()) if h["name"] == "MME"), None)
     out = []
     for d in sd.query_devices():
-        if d["max_input_channels"] > 0 and (mme is None or d["hostapi"] == mme) and "Mapper" not in d["name"] \
+        if d[f"max_{kind}_channels"] > 0 and (mme is None or d["hostapi"] == mme) and "Mapper" not in d["name"] \
                 and d["name"] not in out:
             out.append(d["name"])
     return out
@@ -246,6 +246,100 @@ def pick_input(name: str):
     hits = [(d["hostapi"] != mme, i) for i, d in enumerate(sd.query_devices())
             if d["max_input_channels"] > 0 and name.lower() in d["name"].lower()]
     return min(hits)[1] if hits else None
+
+
+def pick_output(name: str):
+    """Output device whose name contains `name` (e.g. 'Kraken'), preferring MME; None = system default."""
+    if not name:
+        return None
+    import sounddevice as sd
+    mme = next((i for i, h in enumerate(sd.query_hostapis()) if h["name"] == "MME"), None)
+    hits = [(d["hostapi"] != mme, i) for i, d in enumerate(sd.query_devices())
+            if d["max_output_channels"] > 0 and name.lower() in d["name"].lower()]
+    return min(hits)[1] if hits else None
+
+
+class Speaker:
+    """One output stream that stays open; every sound goes through it.
+
+    sounddevice's play()/stop()/wait() open and close a PortAudio stream on every call and share global state between
+    threads; the driver cutting in (stop from the mic thread while the player thread waits) could hang PortAudio and
+    silence the engineer for the rest of the session. Here, stopping is just dropping the buffer the callback reads:
+    no PortAudio call ever happens outside this object, and a wait can never block forever.
+    """
+
+    def __init__(self, sr: int, device=None, log=print):
+        self.sr, self.device, self.log = sr, device, log
+        self.lock = threading.Lock()
+        self.buf: np.ndarray | None = None
+        self.pos = 0
+        self.tok = 0
+        self.ev = threading.Event()
+        self.stream = None
+        self._open()
+
+    def _open(self) -> None:
+        import sounddevice as sd
+        try:
+            self.stream = sd.OutputStream(samplerate=self.sr, channels=1, dtype="float32", device=self.device,
+                                          callback=self._cb)
+            self.stream.start()
+        except Exception as e:
+            self.stream = None
+            self.log(f"audio output failed to open: {e!r}")
+
+    def _cb(self, outdata, frames, t, status):
+        with self.lock:
+            b = self.buf
+            if b is None:
+                outdata.fill(0)
+                return
+            chunk = b[self.pos:self.pos + frames]
+            outdata[:len(chunk), 0] = chunk
+            outdata[len(chunk):] = 0
+            self.pos += frames
+            if self.pos >= len(b):
+                self.buf = None
+                self.ev.set()
+
+    def play(self, audio: np.ndarray, wait: bool = True, cancelled=None) -> int:
+        """Play (replacing whatever is playing). `cancelled(tok)` is checked once the audio is queued, so a driver cut-in
+        that lands at the same moment always wins. Returns the playback token."""
+        if self.stream is None or not self.stream.active:
+            self._reopen()
+        ev = threading.Event()
+        with self.lock:
+            self.ev.set()             # whoever waited on the previous sound is released
+            self.tok += 1
+            tok, self.ev = self.tok, ev
+            self.buf, self.pos = np.ascontiguousarray(audio, dtype=np.float32).ravel(), 0
+        if cancelled is not None and cancelled(tok):
+            self.stop(tok)
+        if wait and not ev.wait(timeout=len(audio) / self.sr + 2.0):
+            self.log("audio output stuck: reopening the device")
+            self.stop(tok)
+            self._reopen()
+        return tok
+
+    def stop(self, tok: int | None = None) -> None:
+        """Stop the current sound (only if it is still `tok`, when given)."""
+        with self.lock:
+            if self.buf is not None and (tok is None or tok == self.tok):
+                self.buf = None
+                self.ev.set()
+
+    def _reopen(self) -> None:
+        old, self.stream = self.stream, None
+        if old is not None:   # closing a broken stream can itself block: never on our thread
+            threading.Thread(target=lambda: (old.abort(), old.close()), daemon=True).start()
+        self._open()
+
+    def name(self) -> str:
+        import sounddevice as sd
+        try:
+            return sd.query_devices(self.device if self.device is not None else sd.default.device[1])["name"]
+        except Exception:
+            return "?"
 
 
 _VK = {"shift": 0x10, "ctrl": 0x11, "control": 0x11, "alt": 0x12, "caps_lock": 0x14, "capslock": 0x14, "space": 0x20,
@@ -308,8 +402,20 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     except Exception:
         pass
     log = lambda s: outq.put(("log", s))  # noqa: E731
+    try:   # a native crash (audio driver, speech libraries) leaves a stack trace instead of silence
+        import faulthandler
+        cfg.logs_dir.mkdir(parents=True, exist_ok=True)
+        faulthandler.enable(open(cfg.logs_dir / "speech_crash.log", "a"), all_threads=True)
+    except Exception:
+        pass
     t = time.perf_counter()
     tts = TTS(cfg)
+    _synth, synth_lock = tts.synth, threading.Lock()
+
+    def synth_locked(text):   # the queue and the direct lines ("Go ahead") never synthesise at the same time
+        with synth_lock:
+            return _synth(text)
+    tts.synth = synth_locked
     log(f"TTS ready ({time.perf_counter() - t:.1f}s)")
     t = time.perf_counter()
     stt = STT(cfg)
@@ -319,17 +425,21 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
     from f1engineer.floor import Floor
     floor = Floor()
     spoken: deque = deque(maxlen=12)       # (time, text) of what we said: ignored if the mic hears it back
-    playing = threading.Event()
     ptt_sources = {"key": False, "pad": False, "game": False}
     rec = {"on": False, "chunks": []}
     preroll: deque = deque(maxlen=5)   # last 0.5 s before the button: people start talking as they press
     lock = threading.Lock()
+    out = Speaker(tts.sr, pick_output(cfg.speaker), log)
+    if cfg.speaker and out.device is None:
+        log(f"speaker '{cfg.speaker}' not found: using the Windows default")
+    log(f"speaker: {out.name()}")
+    queue_tok = {"tok": None}           # playback token of the queued item being spoken (None = direct line)
 
     def beep(freq: float):
         """Short radio chirp so the driver knows the button registered (rising = open, falling = closed)."""
         try:
             t = np.arange(int(tts.sr * 0.07)) / tts.sr
-            sd.play((0.18 * min(1.0, cfg.volume) * np.sin(2 * np.pi * freq * t) * np.hanning(len(t))).astype(np.float32), tts.sr)
+            out.play(0.18 * min(1.0, cfg.volume) * np.sin(2 * np.pi * freq * t) * np.hanning(len(t)))
         except Exception:
             pass
 
@@ -338,13 +448,10 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
         try:
             audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
             spoken.append((time.time(), text))
-            playing.set()
-            sd.play(audio, tts.sr)
-            sd.wait()
+            log(f"said: {text!r}")
+            out.play(audio)
         except Exception as e:
             log(f"playback failed: {e!r}")
-        finally:
-            playing.clear()
 
     def player():
         while True:
@@ -358,24 +465,26 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 log(f"resuming after the driver: {text[:60]!r}")
             try:
                 audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
-                if floor.current is not it:
-                    continue          # the driver cut in while we were synthesising; it's back in the queue
-                spoken.append((time.time(), text))
-                playing.set()
-                sd.play(audio, tts.sr)
-                sd.wait()
+                if floor.current is it and not floor.interrupted:   # else the driver cut in: it's back in the queue
+                    spoken.append((time.time(), text))
+                    out.play(audio, cancelled=mark)
             except Exception as e:
                 log(f"playback failed: {e!r}")
             finally:
-                playing.clear()
+                queue_tok["tok"] = None
                 if floor.done(it):
                     outq.put(("spoken", it.key, it.kind))
+
+    def mark(tok: int) -> bool:
+        """Queued speech just started: remember its token (a cut-in stops exactly this sound); stop if already cut."""
+        queue_tok["tok"] = tok
+        return floor.interrupted
 
     def driver_floor(on: bool):
         """The driver takes (or gives back) the floor: stop mid-sentence, resume it later."""
         cut = floor.set_driver(on)
-        if cut is not None and playing.is_set():
-            sd.stop()
+        if cut is not None and queue_tok["tok"] is not None:
+            out.stop(queue_tok["tok"])
         outq.put(("floor", "driver" if on else "free"))
 
     def set_ptt(src: str, down: bool, via: str = ""):
@@ -425,7 +534,10 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
 
     wake_q: queue.Queue = queue.Queue(maxsize=100)
 
+    mic_seen = {"t": time.time()}
+
     def mic_cb(indata, frames, t, status):
+        mic_seen["t"] = time.time()
         if rec["on"]:
             rec["chunks"].append(indata.copy())
         else:
@@ -504,21 +616,53 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                         break
                 gate.reset()
                 window_until = time.time() + 2.5
+    def wake_supervised():
+        while True:   # an error in one utterance must never leave the engineer deaf for the rest of the session
+            try:
+                wake_loop()
+            except Exception as e:
+                log(f"wake listener error, restarting: {e!r}")
+                driver_floor(False)
+                time.sleep(0.5)
+
     if wake_on:
-        threading.Thread(target=wake_loop, name="wake", daemon=True).start()
+        threading.Thread(target=wake_supervised, name="wake", daemon=True).start()
 
     threading.Thread(target=player, daemon=True).start()
     mic = None
-    try:
-        dev = pick_input(cfg.mic)
-        if cfg.mic and dev is None:
-            log(f"microphone '{cfg.mic}' not found: using the Windows default")
-        mic = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=mic_cb, blocksize=1600, device=dev)
-        mic.start()
+    dev = pick_input(cfg.mic)
+    if cfg.mic and dev is None:
+        log(f"microphone '{cfg.mic}' not found: using the Windows default")
+
+    def open_mic():
+        nonlocal mic
+        try:
+            mic = sd.InputStream(samplerate=16000, channels=1, dtype="float32", callback=mic_cb, blocksize=1600, device=dev)
+            mic.start()
+            mic_seen["t"] = time.time()
+            return True
+        except Exception as e:
+            log(f"no microphone: {e!r}")
+            return False
+
+    if open_mic():
         name = sd.query_devices(dev if dev is not None else sd.default.device[0])["name"]
         log(f"microphone: {name}; PTT key '{cfg.ptt_key}', pad button {cfg.ptt_game_button}")
-    except Exception as e:
-        log(f"no microphone: {e!r}")
+
+    def mic_watch():
+        """A microphone stream can stop delivering audio (device switched, driver hiccup): then reopen it."""
+        nonlocal mic
+        while True:
+            time.sleep(1)
+            if time.time() - mic_seen["t"] < 3:
+                continue
+            log("microphone stopped sending audio: reopening it")
+            old, mic = mic, None
+            if old is not None:   # closing a dead stream can block: never on this thread
+                threading.Thread(target=lambda: (old.abort(), old.close()), daemon=True).start()
+            if not open_mic():
+                time.sleep(4)
+    threading.Thread(target=mic_watch, daemon=True).start()
 
     # keyboard PTT: several independent detectors feed ONE key state (latest event wins, so nothing sticks)
     key_state = {"down": False, "since": 0.0}
@@ -611,10 +755,9 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             _, text, kind, key, ttl = msg
             floor.put(text, kind, key, ttl)
         elif msg[0] == "hush":             # "stop": this message ends now; the queue waits
-            cut = floor.current
-            if cut is not None and playing.is_set():
+            if floor.current is not None and queue_tok["tok"] is not None:
                 floor.interrupted = True
-                sd.stop()
+                out.stop(queue_tok["tok"])
         elif msg[0] == "ptt":
             set_ptt("game", msg[1])
         elif msg[0] == "quit":
@@ -627,21 +770,44 @@ class SpeechClient:
     """Core-side handle to the speech process."""
 
     def __init__(self, cfg, on_transcript):
-        ctx = mp.get_context("spawn")
-        self.inq, self.outq = ctx.Queue(), ctx.Queue()
-        self.proc = ctx.Process(target=worker, args=(cfg, self.inq, self.outq), name="f1e-speech", daemon=True)
-        self.proc.start()
+        self.cfg = cfg
         self.on_transcript = on_transcript
         self.on_spoken = None             # engine callback(key, kind)
         self.device = None
         self.driver_talking = False
-        threading.Thread(target=self._pump, daemon=True).start()
+        self._quit = False
+        self._spawn()
+        threading.Thread(target=self._watch, daemon=True).start()
 
-    def _pump(self):
+    def _spawn(self):
+        ctx = mp.get_context("spawn")
+        self.inq, self.outq = ctx.Queue(), ctx.Queue()
+        self.proc = ctx.Process(target=worker, args=(self.cfg, self.inq, self.outq), name="f1e-speech", daemon=True)
+        self.proc.start()
+        threading.Thread(target=self._pump, args=(self.outq,), daemon=True).start()
+
+    def _watch(self):
+        """The voice process must never die silently: if it does, say so in the log and bring it back."""
+        restarts = 0
+        while not self._quit:
+            time.sleep(1)
+            if self._quit or self.proc.is_alive():
+                continue
+            restarts += 1
+            print(f"[speech] voice process stopped (exit code {self.proc.exitcode}): restarting ({restarts})")
+            self.driver_talking = False
+            if restarts > 5:
+                print("[speech] voice process keeps stopping: giving up (see logs/speech_crash.log)")
+                return
+            self._spawn()
+
+    def _pump(self, outq):
         while True:
             try:
-                m = self.outq.get()
-            except (EOFError, OSError):
+                m = outq.get()
+            except (EOFError, OSError, ValueError):
+                return
+            if m is None:
                 return
             if m[0] == "transcript":
                 print(f"[speech] heard ({m[2]} ms): {m[1]!r}")
@@ -667,6 +833,7 @@ class SpeechClient:
         self.inq.put(("ptt", down))
 
     def stop(self) -> None:
+        self._quit = True
         try:
             self.inq.put(("quit",))
             self.proc.join(3)

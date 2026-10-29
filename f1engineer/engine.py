@@ -118,6 +118,8 @@ class Engine:
         if p is None:
             return  # absorbed into a later packet (e.g. MotionEx / CarDamage on newer games)
         if self.game is None or self.stats["packets"] % 500 == 0:
+            if self.game is None:
+                print(f"[engine] telemetry arriving: {self.parsers.game(fmt)} (format {fmt})")
             self.game = self.parsers.game(fmt)
         try:
             self.tr.on_packet(pid, p, wall)
@@ -145,10 +147,16 @@ class Engine:
                 time.sleep(1)
 
     def run_udp(self, sock: socket.socket) -> None:
+        t0, warned = time.time(), False
         while not self._stop.is_set():
             try:
                 data = sock.recv(2048)
             except socket.timeout:
+                if not warned and not self.stats["packets"] and time.time() - t0 > 90:
+                    warned = True
+                    print("[engine] no telemetry yet: normal in the game's menus (data starts in the garage or on "
+                          f"track). If you're on track: game Settings > Telemetry, UDP on, port {self.cfg.udp_port}, "
+                          "format 2020+; run `uv run f1engineer doctor`")
                 continue
             except OSError:
                 break
@@ -196,6 +204,7 @@ class Engine:
         if stored:
             self._set_reference(stored[0], stored[1], "your stored best")
         self._emit({"type": "session", "track": tr.track, "mode": tr.session_type})
+        print(f"[engine] session: {tr.track}, {tr.session_type}")
         self._greet_at = radio.CLOCK() + 4   # wait for weather/temps/tyres to arrive, then a real radio check
 
     def _set_reference(self, arrays: dict, lap_time: float, label: str) -> None:
@@ -587,6 +596,20 @@ class Engine:
             fn(*args)
 
     # ---- LLM tools ------------------------------------------------------------------
+    def _no_telemetry_note(self) -> str:
+        """No session packet yet: say why, and what we do know (the last track driven)."""
+        try:
+            last = self.store.db.execute("SELECT track, type FROM sessions ORDER BY started DESC LIMIT 1").fetchone()
+        except Exception:
+            last = None
+        got = "packets are arriving but no session info yet" if self.stats["packets"] else "nothing received yet"
+        return ("NO TELEMETRY YET (" + got + "): the game only sends data once a session is loaded (garage or on "
+                "track); menus and loading screens send nothing, so the track, car, setup and laps are unknown. "
+                + (f"Last session here was {last[0]} ({last[1]}). " if last else "")
+                + "Tell the driver plainly you're not getting data yet (still in the menus/loading?). For setup or "
+                  "track questions, ask which track (or confirm the last one) and give a baseline from knowledge for "
+                  "it; real tuning once they're on track.")
+
     def _context(self) -> str:
         """Compact live snapshot sent with every question: simple questions need no tool round trip."""
         tr = self.tr
@@ -597,6 +620,8 @@ class Engine:
              f"track={tr.track}; mode={tr.session_type}; laps_analysed={len(self.reports)}; best_analysed={best}; "
              f"reference={self.ref['label'] + ' ' + str(round(self.ref['time'], 3)) if self.ref else 'none'}; "
              f"input={self.input_device}; assists={self.reports[-1].assists if self.reports else {}}")
+        if not tr.session:
+            s = self._no_telemetry_note() + " " + s
         try:
             car = self._car_status()
             if "tyres" in car:
@@ -742,7 +767,7 @@ class Engine:
             "get_last_lap_report": last_lap,
             "compare_laps": compare,
             "get_corner_history": corner_hist,
-            "get_setup_and_advice": lambda: {
+            "get_setup_and_advice": lambda: {"error": self._no_telemetry_note()} if not self.tr.session else {
                 "game": self.game, "track": self.tr.track,
                 "current_setup": setup_model.annotate(self.tr.setup, self.tr.packet_format),
                 "live_tyre_surface_temps_RL_RR_FL_FR": self._live_tyres().get("tyre_surface"),

@@ -241,6 +241,7 @@ The wizard writes `.env`; every setting has a safe default (see [.env.example](.
 | `F1E_WAKE` / `F1E_ENGINEER_NAME` | `on` / `Bono` | Hands-free wake word, and your engineer's name (pick any: it changes the wake word too) |
 | `F1E_PTT_KEY` / `F1E_PTT_BUTTON` | `shift` / `RS` | Push-to-talk key / controller button |
 | `F1E_MIC` | (Windows default) | Part of your microphone's name, e.g. `Kraken` (a headset mic is far more accurate than a laptop mic next to the game's speakers) |
+| `F1E_SPEAKER` | (Windows default) | Part of the headset/speaker name for the engineer's voice, e.g. `Kraken` (use the device your game sound plays on) |
 | `F1E_STT` | `local` | Speech recognition: `local` (Whisper small.en on a free GPU, base.en on CPU) or `openai` (cloud, best in very noisy rooms, slower) |
 | `F1E_GPU` | `auto` | `auto` = use the GPU only while it has free memory; `off` = CPU |
 | `F1E_UDP_HOST` / `F1E_UDP_PORT` | `127.0.0.1` / `20777` | Telemetry listener (`0.0.0.0` for a console on your LAN) |
