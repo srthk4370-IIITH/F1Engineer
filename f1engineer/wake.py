@@ -13,6 +13,7 @@ import difflib
 import json
 import re
 import time
+from collections import deque
 from pathlib import Path
 
 import numpy as np
@@ -78,6 +79,15 @@ class VoiceGate:
         self.pre: list[np.ndarray] = []
         self.quiet = 0.0
         self.active = False
+        self.ambient: deque = deque(maxlen=150)   # levels between utterances (last ~15 s): the room's noise floor
+
+    def noise(self) -> float:
+        return float(np.percentile(self.ambient, 30)) if len(self.ambient) >= 20 else -90.0
+
+    def quiet_level(self) -> float:
+        """Below this counts as silence. Fans spinning up mid-session raise the floor: silence is judged against the
+        room, or a noisy laptop would never 'finish' a sentence and he'd wait for the 15 s cap."""
+        return min(self.th - 2, max(self.th - self.drop, self.noise() + 4))
 
     def reset(self) -> None:
         self.active, self.buf, self.pre, self.quiet = False, [], [], 0.0
@@ -93,9 +103,11 @@ class VoiceGate:
             self.pre = (self.pre + [block])[-3:]          # 0.3 s of lead-in so the first syllable survives
             if level > self.th:
                 self.active, self.buf, self.quiet = True, list(self.pre), 0.0
+            else:
+                self.ambient.append(level)
             return None
         self.buf.append(block)
-        self.quiet = self.quiet + dur if level <= self.th - self.drop else 0.0
+        self.quiet = self.quiet + dur if level <= self.quiet_level() else 0.0
         length = sum(len(b) for b in self.buf) / 16000
         if self.quiet >= self.hang or length >= self.max_len:
             self.active = False

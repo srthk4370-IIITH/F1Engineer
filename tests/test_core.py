@@ -473,3 +473,23 @@ def test_setup_changes_respect_slider_limits():
     assert not any(c.startswith("front anti-roll bar") for c in changes)   # at 1: the front suspension is used instead
     assert any(c == "front suspension 5 -> 4" for c in changes)
     assert setup_model.change({"frontWing": 11}, 2020, "frontWing", 1) is None
+
+
+def test_voice_gate_ends_in_a_noisy_room():
+    """Fans at -24 dBFS (above the old fixed 'silence' level of threshold-8) must not hold a segment open to the cap."""
+    import numpy as np
+    from f1engineer.wake import VoiceGate
+
+    def blk(db):
+        return np.full(1600, 10 ** (db / 20), np.float32)
+    g = VoiceGate(-19, hang=0.6, max_len=15.0)
+    for _ in range(50):                       # 5 s of fan noise before you speak
+        assert g.feed(blk(-24)) is None
+    for _ in range(8):                        # "Hey Bono"
+        assert g.feed(blk(-10)) is None
+    seg = None
+    for i in range(30):                       # back to fan noise: must end after ~0.6 s, not 15 s
+        seg = g.feed(blk(-24))
+        if seg is not None:
+            break
+    assert seg is not None and i <= 7

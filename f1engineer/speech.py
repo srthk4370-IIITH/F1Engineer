@@ -202,24 +202,26 @@ class STT:
         gc.collect()
         self.device, self.name = "cpu", c.stt_model
 
-    def transcribe_safe(self, audio16k: np.ndarray, cfg, log) -> str:
+    def transcribe_safe(self, audio16k: np.ndarray, cfg, log, quick: bool = False) -> str:
         """transcribe(), but a GPU failure (e.g. the game grabbed the VRAM) falls back to the CPU and retries."""
         try:
-            return self.transcribe(audio16k)
+            return self.transcribe(audio16k, quick)
         except Exception as e:
             if self.device != "cuda":
                 raise
             log(f"GPU speech recognition failed ({e!r}): switching to CPU")
             self.to_cpu(cfg)
-            return self.transcribe(audio16k)
+            return self.transcribe(audio16k, quick)
 
-    def transcribe(self, audio16k: np.ndarray) -> str:
-        if self.cloud is not None:
+    def transcribe(self, audio16k: np.ndarray, quick: bool = False) -> str:
+        """quick: a short clip that only has to contain the engineer's name - local greedy decoding, ~2x faster."""
+        if self.cloud is not None and not quick:
             try:
                 return self.cloud(prep_audio(audio16k))
             except Exception as e:
                 print(f"[speech] cloud transcription failed ({e!r}): using the local model")
-        segs, _ = self.model.transcribe(prep_audio(audio16k), language="en", beam_size=5 if self.device == "cuda" else 2,
+        beam = 1 if quick else 5 if self.device == "cuda" else 2
+        segs, _ = self.model.transcribe(prep_audio(audio16k), language="en", beam_size=beam,
                                         initial_prompt=STT_PROMPT, vad_filter=False, condition_on_previous_text=False,
                                         without_timestamps=True, temperature=0.0)
         return " ".join(s.text.strip() for s in segs).strip()
@@ -561,20 +563,48 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
         return any(time.time() - ts < 25 and difflib.SequenceMatcher(None, t, said.lower()).ratio() > 0.6
                    for ts, said in list(spoken))
 
+    GO_AHEAD = ["Go ahead.", "Yep, go.", "Listening."]
+    NOTHING = ["Didn't hear anything. Say Bono when you're ready.", "Nothing heard. Call me again when you're ready."]
+    cached: dict = {}
+
+    def precache():   # the replies to "Hey Bono" are ready before you ever say it: no synthesis on that path
+        for line in GO_AHEAD + NOTHING:
+            try:
+                cached[line] = tts.synth(line)
+            except Exception:
+                pass
+
+    def speak_cached(line: str):
+        if line not in cached:
+            return speak_now(line)
+        spoken.append((time.time(), line))
+        log(f"said: {line!r}")
+        out.play(cached[line] * min(1.0, max(0.0, cfg.volume)))
+
     def wake_loop():
         names = W.variants(cfg.wake_name, (wk or {}).get("heard"))
-        gate = W.VoiceGate(W.safe_threshold(wk), hang=1.4, max_len=15.0)   # 1.4 s of quiet = you've finished
+        # waiting for the name: 0.6 s of quiet ends it (fast); your question after "Go ahead": 1.4 s (never cut off)
+        gate = W.VoiceGate(W.safe_threshold(wk), hang=0.6, max_len=15.0)
         window_until = 0.0        # after "Go ahead": you have 2.5 s to start talking
         log(f"wake word on: say 'Hey {cfg.wake_name}' (trigger level {gate.th:.0f} dBFS)")
+
+        def open_window():
+            nonlocal window_until
+            gate.hang = 1.4
+            window_until = time.time() + 2.5
+
+        def close_window():
+            nonlocal window_until
+            gate.hang, window_until = 0.6, 0.0
+
         while True:
             try:
                 block = wake_q.get(timeout=0.1)
             except queue.Empty:
                 block = None
             if window_until and not gate.active and time.time() > window_until:
-                window_until = 0.0
-                speak_now(random.choice(["Didn't hear anything. Say Bono when you're ready.",
-                                         "Nothing heard. Call me again when you're ready."]))
+                close_window()
+                speak_cached(random.choice(NOTHING))
                 driver_floor(False)
                 continue
             if block is None:
@@ -582,18 +612,18 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             seg = gate.feed(block)
             if seg is None or rec["on"]:
                 continue
+            quick = not window_until and len(seg) < 16000 * 3     # a short clip: is it the name?
+            t0 = time.perf_counter()
             try:
                 with stt_lock:
-                    text = stt.transcribe_safe(seg, cfg, log)
+                    text = stt.transcribe_safe(seg, cfg, log, quick=quick)
             except Exception as e:
                 log(f"wake transcription failed: {e!r}")
                 continue
             if not text or W.is_phantom(text) or echo(text):
-                if window_until:
-                    continue
                 continue
             if window_until:                       # the question after "Go ahead"
-                window_until = 0.0
+                close_window()
                 log(f"wake question: {text!r}")
                 outq.put(("transcript", text, 0))
                 driver_floor(False)
@@ -601,21 +631,41 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
             call, rest = W.split_wake(text, names)
             if not call:
                 continue
-            log(f"wake word heard: {text!r}")
+            log(f"wake word heard: {text!r} ({(time.perf_counter() - t0) * 1000:.0f} ms)")
             driver_floor(True)                     # barge-in if he was talking; he'll resume afterwards
-            beep(1200)
-            if len(rest.split()) >= 3:
+            if len(rest.split()) >= 3:             # "Bono, what's my gap": the question came with the name
+                if quick:                          # the name check was greedy: hear the question properly
+                    with stt_lock:
+                        full = stt.transcribe_safe(seg, cfg, log)
+                    rest = W.split_wake(full, names)[1] or rest
+                beep(1200)
                 outq.put(("transcript", rest, 0))
                 driver_floor(False)
-            else:
-                speak_now(random.choice(["Go ahead.", "Yep, go.", "Listening."]))
-                while not wake_q.empty():          # drop what the mic heard of our own "Go ahead"
-                    try:
-                        wake_q.get_nowait()
-                    except queue.Empty:
-                        break
-                gate.reset()
-                window_until = time.time() + 2.5
+                continue
+            # still talking after the name ("Bono ... what's my gap")? then no "Go ahead": just keep listening
+            pending = []
+            while not wake_q.empty():
+                try:
+                    pending.append(wake_q.get_nowait())
+                except queue.Empty:
+                    break
+            gate.reset()
+            open_window()
+            if pending and any(20 * np.log10(float(np.sqrt(np.mean(b ** 2))) + 1e-9) > gate.th for b in pending[-4:]):
+                for b in pending:
+                    gate.feed(b)
+                beep(1200)
+                continue
+            beep(1200)
+            speak_cached(random.choice(GO_AHEAD))
+            while not wake_q.empty():              # drop what the mic heard of our own "Go ahead"
+                try:
+                    wake_q.get_nowait()
+                except queue.Empty:
+                    break
+            gate.reset()
+            open_window()
+
     def wake_supervised():
         while True:   # an error in one utterance must never leave the engineer deaf for the rest of the session
             try:
@@ -626,6 +676,7 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 time.sleep(0.5)
 
     if wake_on:
+        threading.Thread(target=precache, daemon=True).start()
         threading.Thread(target=wake_supervised, name="wake", daemon=True).start()
 
     threading.Thread(target=player, daemon=True).start()
