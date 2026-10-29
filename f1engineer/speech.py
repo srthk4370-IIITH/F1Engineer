@@ -72,6 +72,8 @@ def _bandpass(sr: int, lo: float = 300, hi: float = 3400, taps: int = 101) -> np
     return (h * np.hamming(taps)).astype(np.float32)
 
 
+COMMON_STARTS = {"You", "You're", "Your", "The", "That", "This", "It", "It's", "Gap", "Box", "Stay", "Keep", "Push",
+                 "Gaining", "Pulling", "Still", "Good", "Nice", "No", "One", "Two", "Three", "Brake", "Lift", "Get"}
 FX = {"light": (180, 6500, 1.2), "full": (300, 3400, 2.5)}   # band (Hz) and saturation drive
 
 
@@ -463,13 +465,16 @@ def worker(cfg, inq: mp.Queue, outq: mp.Queue) -> None:
                 return
             text = it.text
             if it.resumed:   # cut off earlier by the driver: pick the thread back up
-                text = "As I was saying, " + text[:1].lower() + text[1:]
+                first = text.split(" ", 1)[0]
+                text = "As I was saying, " + (text[:1].lower() + text[1:] if first in COMMON_STARTS else text)
                 it.resumed = False
                 log(f"resuming after the driver: {text[:60]!r}")
             try:
                 audio = tts.synth(text) * min(1.0, max(0.0, cfg.volume))
                 if floor.current is it and not floor.interrupted:   # else the driver cut in: it's back in the queue
                     spoken.append((time.time(), text))
+                    if it.kind != "answer":
+                        log(f"radio ({it.kind}, {time.time() - it.created:.1f}s after it was queued): {text[:90]!r}")
                     out.play(audio, cancelled=mark)
             except Exception as e:
                 log(f"playback failed: {e!r}")

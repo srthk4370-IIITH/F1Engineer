@@ -527,5 +527,3 @@ def test_gap_calls_say_the_right_direction():
                     "rate_per_lap_s": 0.5}).startswith("Gaining on Bottas")
     assert "defend" in t(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 0.7, "change_s": -0.4})
     assert t(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 1.7, "change_s": 0.4}).startswith("Pulling away from")
-    b = Engine._gap_brief(None, {**base, "side": "behind", "driver": "Russell", "gap_s": 0.7, "change_s": -0.4}, "x")
-    assert "IS CLOSING" in b and "defend" in b

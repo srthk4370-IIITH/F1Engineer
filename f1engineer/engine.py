@@ -423,7 +423,8 @@ class Engine:
 
     def _say_sched(self, text: str, priority: int, m=None) -> None:
         kind = "urgent" if m and m.kind == "urgent" else "analysis" if m and m.kind == "garage" else "proactive"
-        self._say(text, priority, kind, m.key if m else "")
+        left = max(4.0, m.ttl - (radio.CLOCK() - m.created)) if m else None
+        self._say(text, priority, kind, m.key if m else "", left)
 
     def _radio_filter(self, m) -> str | None:
         """Last look before a proactive call goes out: the driver's preferences, and the conversation in flight."""
@@ -481,6 +482,8 @@ class Engine:
             return
         self._last_strategist = now
 
+        t_brief = radio.CLOCK()
+
         def run():
             try:
                 a = Agent(self._tools(), self._context, sass=self.cfg.sass, provider=self.agent.provider,
@@ -497,11 +500,13 @@ class Engine:
                     "If you're not sure, fetch more data - call as many tools as you need, several rounds - before "
                     "you decide. Never guess.\n"
                     f"Already said on the radio recently: {said}.\n"
+                    "Live gaps and positions are called instantly by the data radio; by the time you finish they're "
+                    "stale, so don't quote them. Your value is the improvement: the driving fix, strategy, the pattern.\n"
                     "Answer with exactly SILENT, or one radio call of at most two sentences: the number, then the "
                     "concrete action.", mode="strategist", remember=False, max_rounds=6)).strip()
                 print(f"[strategist] {trigger}: {text[:160]}")
                 if text and "SILENT" not in text.upper()[:20]:
-                    self.sched.push([radio.Message(3, radio.CLOCK(), text, "straight", 45, replace_key)])
+                    self.sched.push([radio.Message(3, t_brief, text, "straight", 60, replace_key)])
             except Exception as e:
                 print(f"[strategist] failed: {e!r}")
         threading.Thread(target=run, name="strategist", daemon=True).start()
@@ -583,8 +588,7 @@ class Engine:
 
         Detection is data (the race gap at each sector line, plus a corner-by-corner comparison of the stretch just
         driven). One sector moving 0.15 s, or three sectors in a row the same way adding up to 0.3 s, is a call. The AI
-        phrases it like an engineer (what it means, attack/defend/fix) when it answers within 5 s; otherwise the
-        data line goes out as is.
+        data line goes out at once: it's a live call, and a late gap is a wrong gap.
         """
         from f1engineer.analysis import rival
         tr = self.tr
@@ -641,24 +645,9 @@ class Engine:
         c = calls[0]
         text = self._gap_text(c)
         prio = 3 if (c["side"] == "behind" and c["change_s"] < 0 and c["gap_s"] < 1.5) else 4
-        key = f"gap{c['driver']}"
-        brief = self._gap_brief(c, text)
-        self._ai_line(brief, text, prio, key, evidence=abs(c["change_s"]))
-
-    def _gap_brief(self, c: dict, text: str) -> str:
-        """The facts in plain words (signed numbers get misread), so the AI only phrases and adds the action."""
-        them, side, good = c["driver"], c["side"], c["change_s"] > 0
-        situation = {("ahead", True): f"WE ARE GAINING on {them}, the car AHEAD of us",
-                     ("ahead", False): f"WE ARE LOSING time to {them}, the car AHEAD of us; he is pulling away",
-                     ("behind", False): f"{them}, the car BEHIND us, IS CLOSING on us",
-                     ("behind", True): f"WE ARE PULLING AWAY from {them}, the car BEHIND us"}[(side, good)]
-        action = {("ahead", True): "keep it up and attack",
-                  ("ahead", False): "the driving fix at that corner to stop the bleeding",
-                  ("behind", False): "defend (and the fix at that corner)",
-                  ("behind", True): "keep doing it, stay clean"}[(side, good)]
-        return ("(Pit wall: a gap call, not a driver question.) " + situation + ". The data line, which is correct: \""
-                + text + "\" Say it as the engineer in at most two short sentences: who and how much, where, then "
-                + action + ". Never change who is gaining or losing, or the numbers.")
+        # live: the data line goes out now (an AI rephrase costs 2-5 s, and a late gap is a wrong gap)
+        self.sched.push([radio.Message(prio, radio.CLOCK(), text, "straight", 15, f"gap{c['driver']}",
+                                       evidence=abs(c["change_s"]))])
 
     def _gap_text(self, c: dict) -> str:
         """The data version of a gap call (also the fallback when the AI is slow or unreachable)."""
@@ -678,38 +667,6 @@ class Engine:
             return f"{them} is closing, {amt:.1f} {span}, {g:.1f} behind." + (f" He's quicker at{where}" if w else "") + tail
         return f"Pulling away from {them}, {amt:.1f} {span}, now {g:.1f}." + (f" Good at{where}" if w else "")
 
-    def _ai_line(self, brief: str, fallback: str, prio: int, key: str, evidence: float = 0.0, wait: float = 5.0) -> None:
-        """Say `fallback`, or the AI's version of it if the AI answers within `wait` seconds (never both)."""
-        def push(text):
-            self.sched.push([radio.Message(prio, radio.CLOCK(), text, "straight", 25, key, evidence=evidence)])
-        down = max(getattr(self, "_ai_down_said", 0), getattr(self, "_ai_fail_t", 0))
-        if isinstance(self.agent.provider, MockProvider) or time.time() - down < 120:
-            push(fallback)
-            return
-        done = threading.Event()
-        lock = threading.Lock()
-
-        def run():
-            text = self.agent.phrase(brief)
-            if text is None:
-                self._ai_fail_t = time.time()   # AI unreachable: data lines for the next 2 minutes
-            with lock:
-                if done.is_set():
-                    return          # too late: the data line already went out
-                done.set()
-            push(text if text and "SILENT" not in text.upper()[:10] else fallback)
-
-        def timeout():
-            if not done.wait(wait):
-                with lock:
-                    if done.is_set():
-                        return
-                    done.set()
-                push(fallback)
-        threading.Thread(target=run, daemon=True).start()
-        threading.Thread(target=timeout, daemon=True).start()
-
-    # ---- background work -----------------------------------------------------------
     def _bg_put(self, fn, *args) -> None:
         try:
             self._bg.put_nowait((fn, args))

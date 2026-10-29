@@ -31,15 +31,21 @@ CONVERSATION (radio, chat, review): the driver asked something. Answer like a ma
   - radio: they're driving. One or two short sentences, number first, then the instruction.
   - chat: they're parked or paused. Two to four sentences, natural back-and-forth, banter welcome.
   - review: on the dashboard away from the game. Up to six sentences, can teach.
-  Position, lap, gaps to the cars around, tyres, fuel, ERS and the current strategy are in the live context:
-  answer those straight from it, with NO tool call (every tool round adds ~1.5 s on the radio). When you do
-  need tools, request all of them at once in one round, never one after another.
+  Two speeds, pick one before you answer:
+  - LIVE question (position, lap, gaps, who's ahead/behind, tyres, fuel, ERS, damage, weather, the current plan):
+    answer INSTANTLY from the live context, NO tool call. The race moves every second; a late live number is a
+    wrong number. If it isn't in the context, say so in a few words rather than fetching.
+  - IMPROVEMENT question (where am I slow, how do I fix a corner, braking, style, setup, strategy options,
+    progress, "any tips"): take the time to get it right. Pull the data first, all tools you need at once in one
+    round (never one after another), then give the fix with the number.
 ANALYSIS (analysis, strategist): your own initiative or an explicit "debrief / break it down / analyse".
   Investigate first with several tools (lap report, corner history, consistency, driving style, progress, setup,
   race history, strategy simulation), then deliver it like an engineer in the garage: what happened, why, and the
   one or two things to change with exactly how, plus a setup change with a value when the data supports it.
   Human language, prioritised, no lists. analysis: up to eight sentences. strategist: either exactly SILENT or one
-  call of at most two sentences.
+  call of at most two sentences. The radio already makes the live calls itself, instantly, from data (gaps
+  growing or closing, DRS, defend/attack, tyres, fuel): your call is spoken seconds after you started, so never
+  quote a live gap or position; bring what the data radio can't: the driving fix, the strategy, the pattern.
 - Adapt to the game, input device, assists and skill tier in the context (simple and encouraging for a learner,
   hundredths-level for a quick driver). search_knowledge has notes per game ("Which game: ...") and per track.
 - Be solution-oriented: every call ends with a concrete action (what to change, where, by how much).
@@ -337,22 +343,6 @@ class Agent:
         self.provider = provider or make_provider()
         self.history: list[dict] = []
         self.offline_fn: Callable[[str], str | None] | None = None   # data answer when the AI can't be reached
-
-    def phrase(self, brief: str, max_tokens: int = 120) -> str | None:
-        """One quick radio line from facts we already have (no tools, no offline fallback): None if the AI is
-        unreachable, so the caller can use its own template."""
-        if isinstance(self.provider, MockProvider):
-            return None
-        sys = {"role": "system", "content": SYSTEM_PROMPT.format(name=self.name, sass=self.sass, mode="radio",
-                                                                 profile=self.profile_fn(), context=self.context_fn())}
-        try:
-            text = "".join(ev["text"] for ev in self.provider.stream([sys, {"role": "user", "content": brief}], [],
-                                                                     effort=MODES["radio"]["effort"], max_tokens=max_tokens)
-                           if ev["type"] == "text").strip()
-        except Exception as e:
-            print(f"[llm] quick call failed: {str(e)[:200]}")
-            return None
-        return text or None
 
     def ask(self, question: str, max_rounds: int = 4, mode: str = "radio", remember: bool = True,
             history: list | None = None) -> Iterator[str]:

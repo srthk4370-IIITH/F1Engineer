@@ -3,8 +3,9 @@
 Rules
   - Nothing starts while the driver is talking (button held, or answering after "Go ahead").
   - The driver can cut in at any time: playback stops mid-sentence and that sentence goes back to the front of the
-    queue, so it's resumed afterwards ("As I was saying, ...") - nothing is thrown away. Acknowledgements are the
-    only thing dropped (they'd be stale).
+    queue, so it's resumed afterwards ("As I was saying, ..."). Acknowledgements, and live calls more than 10 s old,
+    are dropped instead (their numbers would be stale).
+  - A newer live call on the same topic (key) replaces the queued one: never two gaps to the same car.
   - Order: urgent calls, then acknowledgements, then answers, then routine calls, then long analysis; within one
     message, its sentences stay in order. Items expire only after a generous per-kind time-to-live.
 """
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 
 PRIORITY = {"urgent": 0, "ack": 1, "answer": 2, "proactive": 3, "analysis": 4}
 TTL = {"urgent": 30, "ack": 6, "answer": 180, "proactive": 90, "analysis": 600}
+RESUME_LIVE_S = 10    # a cut-off live call older than this has old numbers: drop it, the radio makes a new one
 _SENT = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -45,6 +47,8 @@ class Floor:
     def put(self, text: str, kind: str = "proactive", key: str = "", ttl: float | None = None, prio: int | None = None):
         parts = [p for p in _SENT.split(text.strip()) if p] if kind in ("analysis", "proactive", "answer") else [text]
         with self.cv:
+            if key and kind in ("proactive", "urgent"):   # newer numbers on the same topic replace the queued ones
+                self.items = [i for i in self.items if i.key != key]
             for p in parts:
                 self.seq += 1
                 self.items.append(Item(PRIORITY.get(kind, 3) if prio is None else prio, self.seq, p, kind, key,
@@ -63,7 +67,8 @@ class Floor:
             cut = self.current
             if cut is not None:
                 self.interrupted = True
-                if cut.kind != "ack":   # resume it afterwards, from the start of the sentence
+                stale = cut.kind == "proactive" and time.time() - cut.created > RESUME_LIVE_S
+                if cut.kind != "ack" and not stale:   # resume it afterwards, from the start of the sentence
                     cut.resumed = True
                     cut.prio = min(cut.prio, PRIORITY["answer"]) if cut.kind == "answer" else cut.prio
                     self.items.append(cut)

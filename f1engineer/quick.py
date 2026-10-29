@@ -36,7 +36,7 @@ EXPLAIN = _w(r"^(explain( that| this| it)?|what do you mean|why( is that| that)?
 
 RIVAL = _w(r"(losing|lose|lost|gaining|gain|faster|quicker|slower|time)\b.{0,25}\b(to|than|against|vs|versus|on|compared to)\b"
            r"|compare me|me (vs|versus|against)|how do i compare")
-LOSING = _w(r"losing time|where am i (slow|losing)|where'?s the time")
+LOSING = _w(r"losing time|where (am|was|did|do) i (slow|losing|lose|lost)|where'?s the time|where.{0,20}\bslow")
 RACE_UPDATE = _w(r"race update|how'?s the race|race status|update me|sitrep|status update|what'?s happening|give me an update")
 
 INTENTS = [  # (name, pattern) - first match wins
